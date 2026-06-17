@@ -1,0 +1,8 @@
+{
+  "_comment": "Test fixtures - data about the images in test/, used only by tests.py, never by the pipeline. 'expected': exact decoded text per image. 'experimental': images (abstract/hand-painted art) that only need to run without crashing; everything else must decode with language quality >= min_quality. Only test_stop.png ships with the repo; add more images to test/ and they are picked up automatically.",
+  "min_quality": 0.3,
+  "expected": {
+    "test_stop.png": "You shall not pass"
+  },
+  "experimental": []
+}

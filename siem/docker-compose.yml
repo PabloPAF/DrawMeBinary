@@ -1,0 +1,65 @@
+# Local SIEM demo for DrawMeBinary logs.
+#
+#   Vector  ->  OpenSearch  ->  OpenSearch Dashboards
+#   (ships)     (stores/indexes)  (search, dashboards, alerting)
+#
+# All Apache-2.0. This is a LOCAL DEV demo: the OpenSearch security plugin is
+# disabled so there is no auth. Never expose these ports to the internet as-is
+# - in production, enable the security plugin, set strong passwords and TLS,
+# and put OpenSearch on a private network.
+#
+# Usage:
+#   1. Generate some logs:  python webapp/app.py  (then use the UI), or run
+#      the CLI - logs land in ../logs/security.jsonl
+#   2. docker compose -f siem/docker-compose.yml up -d
+#   3. Open http://localhost:5601  ->  create index pattern  drawmebinary-logs-*
+#
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2.16.0
+    container_name: dmb-opensearch
+    environment:
+      - discovery.type=single-node
+      - DISABLE_SECURITY_PLUGIN=true          # LOCAL DEMO ONLY
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    ports:
+      - "127.0.0.1:9200:9200"                 # bound to localhost only
+    volumes:
+      - osdata:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  dashboards:
+    image: opensearchproject/opensearch-dashboards:2.16.0
+    container_name: dmb-dashboards
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch:9200"]
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true   # LOCAL DEMO ONLY
+    ports:
+      - "127.0.0.1:5601:5601"                 # bound to localhost only
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  vector:
+    image: timberio/vector:0.40.0-debian
+    container_name: dmb-vector
+    command: ["--config", "/etc/vector/vector.toml"]
+    volumes:
+      - ../logs:/var/log/drawmebinary:ro      # the app's rotating JSONL log
+      - ./vector.toml:/etc/vector/vector.toml:ro
+      - vectordata:/var/lib/vector
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+volumes:
+  osdata:
+  vectordata:

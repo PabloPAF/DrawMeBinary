@@ -1,0 +1,16 @@
+opencv-python>=4.8
+numpy>=1.24
+pillow>=10.0
+pytesseract>=0.3.10
+pytest>=8.0
+pyspellchecker>=0.8      # optional but recommended: EN/ES word scoring
+
+# PDF support (install at least one)
+pymupdf>=1.24            # preferred: pure-python, no system deps
+# pdf2image>=1.17        # alternative: requires poppler on the system
+
+# Optional: local web UI (python webapp/app.py)
+flask>=3.0
+
+# Optional: keras 0/1 verifier (only used if installed)
+# tensorflow>=2.15

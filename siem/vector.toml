@@ -1,0 +1,41 @@
+# Vector pipeline: tail the app's ECS JSON log -> OpenSearch.
+#
+# The app already writes one ECS JSON object per line, so Vector only needs
+# to parse each line and forward it; no field remapping is required.
+
+# 1. read the rotating JSONL the app writes (mounted read-only)
+[sources.dmb_logs]
+type = "file"
+include = ["/var/log/drawmebinary/security.jsonl"]
+read_from = "beginning"
+fingerprint.strategy = "device_and_inode"
+
+# 2. each line is already a full ECS document -> parse it into the event
+[transforms.parse]
+type = "remap"
+inputs = ["dmb_logs"]
+source = '''
+parsed, err = parse_json(.message)
+if err != null {
+  # not JSON (shouldn't happen) - keep the raw line, tag it for review
+  .event = { "action": "log.unparsed" }
+  .log = { "level": "error" }
+} else {
+  . = parsed
+}
+# Vector needs a top-level timestamp; reuse the ECS @timestamp when present
+if exists(.@timestamp) {
+  ts, terr = parse_timestamp(.@timestamp, "%+")
+  if terr == null { .timestamp = ts }
+}
+'''
+
+# 3. ship to OpenSearch, one daily index (ECS-friendly)
+[sinks.opensearch]
+type = "elasticsearch"
+inputs = ["parse"]
+endpoints = ["http://opensearch:9200"]
+api_version = "auto"
+mode = "bulk"
+bulk.index = "drawmebinary-logs-%Y.%m.%d"
+healthcheck.enabled = false

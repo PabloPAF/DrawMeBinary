@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DrawMeBinary</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --line: #2a2f3a; --ink: #e7ebf0;
+    --muted: #9aa3b2; --accent: #5b9dff; --warn: #ffb454; --danger: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 15px/1.5 -apple-system, system-ui, Segoe UI, Roboto, sans-serif;
+    background: var(--bg); color: var(--ink);
+  }
+  header { padding: 28px 20px 8px; text-align: center; }
+  header h1 { margin: 0; font-size: 26px; letter-spacing: .5px; }
+  header p { margin: 6px 0 0; color: var(--muted); }
+  main { max-width: 980px; margin: 0 auto; padding: 20px; }
+  #drop {
+    border: 2px dashed var(--line); border-radius: 14px; padding: 40px 20px;
+    text-align: center; cursor: pointer; transition: .15s; background: var(--panel);
+  }
+  #drop.hover { border-color: var(--accent); background: #1d2330; }
+  #drop strong { color: var(--accent); }
+  #drop small { color: var(--muted); display: block; margin-top: 6px; }
+  .row { display: flex; gap: 14px; align-items: center; justify-content: center;
+         flex-wrap: wrap; margin: 16px 0; }
+  select, button {
+    font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 9px; padding: 9px 14px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { text-align: center; color: var(--muted); min-height: 22px; }
+  #error { text-align: center; color: var(--danger); font-weight: 600; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+          padding: 16px; margin-top: 18px; }
+  .card h3 { margin: 0 0 10px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  #decoded { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, Consolas, monospace;
+             font-size: 16px; background: #11141a; border: 1px solid var(--line);
+             border-radius: 9px; padding: 14px; }
+  #secbanner { display: none; margin-top: 12px; padding: 12px 14px; border-radius: 9px;
+               background: #3a2a12; border: 1px solid var(--warn); color: var(--warn); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  figure { margin: 0; text-align: center; }
+  figure img { width: 100%; border-radius: 9px; border: 1px solid var(--line);
+               background: repeating-conic-gradient(#0000 0% 25%, #ffffff0d 0% 50%) 0/18px 18px; }
+  figcaption { color: var(--muted); margin: 8px 0; font-size: 13px; }
+  .dl { display: inline-block; text-decoration: none; }
+  #results { display: none; }
+  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DrawMeBinary</h1>
+  <p>Decode binary (0/1) text hidden in artwork &mdash; preview, then save what you want.</p>
+</header>
+
+<main>
+  <div id="drop">
+    <strong>Click to choose an image</strong> or drop one here
+    <small>PNG &middot; JPEG &middot; BMP &middot; TIFF &nbsp;|&nbsp; up to {{ max_mb }} MB</small>
+    <input id="file" type="file" accept=".png,.jpg,.jpeg,.bmp,.tif,.tiff" hidden>
+  </div>
+
+  <div class="row">
+    <label>Style preset:
+      <select id="preset">
+        <option value="">default</option>
+        {% for p in presets %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select>
+    </label>
+    <button id="go" class="primary" disabled>Decode</button>
+    <button id="reset" disabled>Clear</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="error"></div>
+
+  <div id="results">
+    <div class="card">
+      <h3>Decoded text</h3>
+      <div id="decoded"></div>
+      <div id="secbanner"></div>
+    </div>
+    <div class="card">
+      <h3>Rendered output &mdash; click a download to save</h3>
+      <div class="grid">
+        <figure>
+          <figcaption>Original</figcaption>
+          <img id="img-orig" alt="original">
+        </figure>
+        <figure>
+          <figcaption>Basic</figcaption>
+          <img id="img-basic" alt="basic render">
+          <div><a id="dl-basic" class="dl"><button>Download basic</button></a></div>
+        </figure>
+        <figure>
+          <figcaption>Poster</figcaption>
+          <img id="img-poster" alt="poster render">
+          <div><a id="dl-poster" class="dl"><button>Download poster</button></a></div>
+        </figure>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>DrawMeBinary &middot; <span title="Logged for security purposes: truncated IP (/24), browser family, and timestamp. No uploaded images or decoded content are retained. Logs are deleted after 14 days.">Privacy: requests are logged for security (truncated IP, browser family, timestamp). No images or decoded content are stored. Logs deleted after 14 days.</span></footer>
+
+<script>
+(function () {
+  const drop = document.getElementById('drop');
+  const fileInput = document.getElementById('file');
+  const go = document.getElementById('go');
+  const reset = document.getElementById('reset');
+  const status = document.getElementById('status');
+  const errorEl = document.getElementById('error');
+  const results = document.getElementById('results');
+  const MAX_BYTES = {{ max_mb }} * 1024 * 1024;
+  let chosen = null;
+
+  function setError(msg) { errorEl.textContent = msg || ''; }
+  function setStatus(msg) { status.textContent = msg || ''; }
+
+  function pick(file) {
+    setError('');
+    if (!file) return;
+    if (file.size > MAX_BYTES) {
+      setError('That file is ' + (file.size / 1e6).toFixed(1) + ' MB; the limit is {{ max_mb }} MB.');
+      return;
+    }
+    chosen = file;
+    go.disabled = false; reset.disabled = false;
+    setStatus('Ready: ' + file.name);
+    // local preview of the original (no server round-trip)
+    const reader = new FileReader();
+    reader.onload = e => { document.getElementById('img-orig').src = e.target.result; };
+    reader.readAsDataURL(file);
+  }
+
+  drop.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', e => pick(e.target.files[0]));
+  ['dragenter', 'dragover'].forEach(ev =>
+    drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('hover'); }));
+  ['dragleave', 'drop'].forEach(ev =>
+    drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('hover'); }));
+  drop.addEventListener('drop', e => pick(e.dataTransfer.files[0]));
+
+  reset.addEventListener('click', () => {
+    chosen = null; fileInput.value = ''; results.style.display = 'none';
+    go.disabled = true; reset.disabled = true; setStatus(''); setError('');
+  });
+
+  go.addEventListener('click', async () => {
+    if (!chosen) return;
+    go.disabled = true; setError(''); setStatus('Decoding…');
+    const fd = new FormData();
+    fd.append('image', chosen);
+    fd.append('preset', document.getElementById('preset').value);
+    try {
+      const resp = await fetch('/decode', { method: 'POST', body: fd });
+      const data = await resp.json();
+      if (!resp.ok) { setError(data.error || 'Request failed.'); setStatus(''); go.disabled = false; return; }
+
+      // untrusted decoded text -> textContent only, never innerHTML
+      document.getElementById('decoded').textContent = data.text || '(nothing decoded)';
+
+      const sec = document.getElementById('secbanner');
+      if (data.security && data.security.code_suspect) {
+        sec.textContent = '⚠ The decoded text looks like code (' +
+          (data.security.findings || []).join(', ') +
+          '). It is shown as plain text only and is never executed.';
+        sec.style.display = 'block';
+      } else { sec.style.display = 'none'; }
+
+      const stem = chosen.name.replace(/\.[^.]+$/, '') || 'image';
+      const basic = document.getElementById('img-basic');
+      const poster = document.getElementById('img-poster');
+      basic.src = data.basic; poster.src = data.poster;
+      const dlB = document.getElementById('dl-basic');
+      const dlP = document.getElementById('dl-poster');
+      dlB.href = data.basic; dlB.download = stem + '_basic.png';
+      dlP.href = data.poster; dlP.download = stem + '_poster.png';
+
+      results.style.display = 'block';
+      setStatus('Done.');
+    } catch (err) {
+      setError('Network error: ' + err.message); setStatus('');
+    }
+    go.disabled = false;
+  });
+})();
+</script>
+</body>
+</html>

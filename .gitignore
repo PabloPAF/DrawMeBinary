@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+pytest-cache-files-*/
+
+# Generated output (images + extracted text)
+output/
+
+# Security logs (shipped to a SIEM, not committed)
+logs/
+
+# Optional trained model (regenerate with drawmebinary/train_model.py)
+mnist_binary_verifier.keras
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Secrets — never commit
+.env
+.env.*
+*.secret
+
+# stray probe folder (safe to delete: rm -rf _probe)
+_probe/
+
+# LinkedIn post draft (not part of the source)
+linkedin_post.md
