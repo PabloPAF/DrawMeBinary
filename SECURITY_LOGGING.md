@@ -70,3 +70,38 @@ log.event('validation.refused', category='file', outcome='failure',
 ```
 
 Same schema, same dashboards, same detection rules.
+
+## Two projects, one SIEM
+
+DrawMeBinary is delivered as two separate projects that both ship into the
+**same** SIEM. They share this ECS schema and event taxonomy; only
+`service.name` differs, so one index holds both and you can slice by project:
+
+| Project | `service.name` | Status |
+|---------|----------------|--------|
+| Web app (this repo, `webapp/app.py`) | `drawmebinary-web` | shipping |
+| Mobile app (camera decoder) | `drawmebinary-mobile` (suggested) | future, separate project |
+
+Filter one project in Discover/Dev Tools with
+`service.name: "drawmebinary-web"`.
+
+When the mobile project is built, keep it consistent by emitting the **same**
+ECS fields and actions rather than inventing new ones:
+
+- Use the existing taxonomy: `app.started` for lifecycle, `decode.completed`
+  per scan, `validation.refused` for rejected input, `code.detected` when
+  decoded text looks like code.
+- Reuse the field set in this doc (`file.size`, `file.hash.sha256`,
+  `labels.image_width/height`, `labels.streams`, `labels.content_length`,
+  `labels.content_sha256`, `event.duration_ms`, `trace.id`).
+- Never log the decoded message, the photo, or a file path — only the
+  `content_sha256` hash and metadata, exactly as the web app does.
+- A camera scan has no client IP, so omit `source.ip` (or set a device /
+  install id under a `labels.*` field if you need to group by device,
+  treating it as personal data under the same retention policy).
+- Mobile is offline-first: buffer events locally and flush to the collector
+  when connectivity returns; the rotating-file + tail model here is the
+  on-device analogue.
+
+Because the schema is identical, the SIEM dashboards and detection monitors
+in `siem/README.md` work for the mobile project unchanged.

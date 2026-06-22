@@ -7,124 +7,600 @@
 <style>
   :root {
     --bg: #0f1115; --panel: #181b22; --line: #2a2f3a; --ink: #e7ebf0;
-    --muted: #9aa3b2; --accent: #5b9dff; --warn: #ffb454; --danger: #ff6b6b;
+    --muted: #9aa3b2; --accent: #5b9dff; --warn: #ffb454; --danger: #ff6b6b; --ok: #5bd6a0;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; font: 15px/1.5 -apple-system, system-ui, Segoe UI, Roboto, sans-serif;
     background: var(--bg); color: var(--ink);
   }
-  header { padding: 28px 20px 8px; text-align: center; }
+  header { padding: 26px 20px 6px; text-align: center; }
   header h1 { margin: 0; font-size: 26px; letter-spacing: .5px; }
   header p { margin: 6px 0 0; color: var(--muted); }
-  main { max-width: 980px; margin: 0 auto; padding: 20px; }
-  #drop {
-    border: 2px dashed var(--line); border-radius: 14px; padding: 40px 20px;
-    text-align: center; cursor: pointer; transition: .15s; background: var(--panel);
-  }
+  main { max-width: 1400px; margin: 0 auto; padding: 18px 20px 40px;
+         display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 1040px) { main { grid-template-columns: 1fr; } }
+  .col-h { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+  .col-h h2 { margin: 0; font-size: 16px; letter-spacing: .3px; }
+  .col-h .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line);
+                border-radius: 999px; padding: 2px 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+          padding: 14px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 10px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+
+  /* ---- shared controls ---- */
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  select, input[type=text], input[type=number], textarea {
+    font: inherit; color: var(--ink); background: #11141a; border: 1px solid var(--line);
+    border-radius: 9px; padding: 8px 10px; }
+  textarea { width: 100%; resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace;
+             font-size: 13px; line-height: 1.5; }
+  input[type=range] { accent-color: var(--accent); }
+  input[type=color] { width: 38px; height: 30px; padding: 0; border: 1px solid var(--line);
+                      border-radius: 7px; background: none; cursor: pointer; }
+  button { font: inherit; color: var(--ink); background: #11141a; border: 1px solid var(--line);
+           border-radius: 9px; padding: 8px 12px; cursor: pointer; transition: .12s; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; border-right: 1px solid var(--line); }
+  .seg button:last-child { border-right: 0; }
+  .seg button.active { background: #1d2330; color: var(--accent); }
+  .hint { color: var(--muted); font-size: 12px; margin: 4px 0; }
+  .stat { font-size: 12px; color: var(--ok); min-height: 18px; }
+  .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+  .sw { width: 22px; height: 22px; border-radius: 6px; border: 1px solid #0006; cursor: pointer; }
+
+  /* ---- canvas ---- */
+  .canvas-wrap { position: relative; width: 100%;
+    background: repeating-conic-gradient(#0000 0% 25%, #ffffff0d 0% 50%) 0/18px 18px;
+    border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .canvas-wrap canvas { display: block; width: 100%; height: auto; }
+  #bgcv { position: relative; }                 /* background layer sets the size */
+  #cv  { position: absolute; inset: 0; height: 100%; pointer-events: none; }
+  #fxcv { position: absolute; inset: 0; height: 100%; touch-action: none; cursor: crosshair; }
+
+  /* lightbox for enlarging decoded images */
+  .lb { display: none; position: fixed; inset: 0; background: #000d; z-index: 50;
+        align-items: center; justify-content: center; padding: 24px; cursor: zoom-out; }
+  .lb.open { display: flex; }
+  .lb img { max-width: 95vw; max-height: 92vh; border-radius: 10px; border: 1px solid var(--line);
+            background: #fff; box-shadow: 0 10px 40px #000a; }
+  .lb .lb-cap { position: fixed; top: 16px; left: 0; right: 0; text-align: center;
+                color: var(--muted); font-size: 13px; }
+  figure img { cursor: zoom-in; }
+
+  /* ---- decode side ---- */
+  #drop { border: 2px dashed var(--line); border-radius: 14px; padding: 30px 20px;
+          text-align: center; cursor: pointer; transition: .15s; background: #11141a; }
   #drop.hover { border-color: var(--accent); background: #1d2330; }
   #drop strong { color: var(--accent); }
   #drop small { color: var(--muted); display: block; margin-top: 6px; }
-  .row { display: flex; gap: 14px; align-items: center; justify-content: center;
-         flex-wrap: wrap; margin: 16px 0; }
-  select, button {
-    font: inherit; color: var(--ink); background: var(--panel);
-    border: 1px solid var(--line); border-radius: 9px; padding: 9px 14px; cursor: pointer;
-  }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 600; }
-  button:disabled { opacity: .5; cursor: default; }
-  #status { text-align: center; color: var(--muted); min-height: 22px; }
-  #error { text-align: center; color: var(--danger); font-weight: 600; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-          padding: 16px; margin-top: 18px; }
-  .card h3 { margin: 0 0 10px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  #status { text-align: center; color: var(--muted); min-height: 20px; }
+  #error { text-align: center; color: var(--danger); font-weight: 600; min-height: 20px; }
   #decoded { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, Consolas, monospace;
              font-size: 16px; background: #11141a; border: 1px solid var(--line);
              border-radius: 9px; padding: 14px; }
   #secbanner { display: none; margin-top: 12px; padding: 12px 14px; border-radius: 9px;
                background: #3a2a12; border: 1px solid var(--warn); color: var(--warn); }
-  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
-  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  @media (max-width: 520px) { .grid { grid-template-columns: 1fr; } }
   figure { margin: 0; text-align: center; }
   figure img { width: 100%; border-radius: 9px; border: 1px solid var(--line);
                background: repeating-conic-gradient(#0000 0% 25%, #ffffff0d 0% 50%) 0/18px 18px; }
   figcaption { color: var(--muted); margin: 8px 0; font-size: 13px; }
   .dl { display: inline-block; text-decoration: none; }
   #results { display: none; }
-  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px; }
+  footer { grid-column: 1 / -1; text-align: center; color: var(--muted); font-size: 12px; padding: 18px; }
 </style>
 </head>
 <body>
 <header>
   <h1>DrawMeBinary</h1>
-  <p>Decode binary (0/1) text hidden in artwork &mdash; preview, then save what you want.</p>
+  <p>Draw &amp; hide a message in 0/1 on the left &mdash; decode binary hidden in artwork on the right.</p>
 </header>
 
 <main>
-  <div id="drop">
-    <strong>Click to choose an image</strong> or drop one here
-    <small>PNG &middot; JPEG &middot; BMP &middot; TIFF &nbsp;|&nbsp; up to {{ max_mb }} MB</small>
-    <input id="file" type="file" accept=".png,.jpg,.jpeg,.bmp,.tif,.tiff" hidden>
-  </div>
+  <!-- ===================== LEFT: DRAW & ENCODE ===================== -->
+  <section>
+    <div class="col-h"><h2>Draw &amp; Encode</h2><span class="tag">paint + 0/1 translator</span></div>
 
-  <div class="row">
-    <label>Style preset:
-      <select id="preset">
-        <option value="">default</option>
-        {% for p in presets %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
-      </select>
-    </label>
-    <button id="go" class="primary" disabled>Decode</button>
-    <button id="reset" disabled>Clear</button>
-  </div>
-
-  <div id="status"></div>
-  <div id="error"></div>
-
-  <div id="results">
     <div class="card">
-      <h3>Decoded text</h3>
-      <div id="decoded"></div>
-      <div id="secbanner"></div>
+      <div class="canvas-wrap">
+        <canvas id="bgcv" width="1000" height="700"></canvas>
+        <canvas id="cv" width="1000" height="700"></canvas>
+        <canvas id="fxcv" width="1000" height="700"></canvas>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <div class="seg" id="tools">
+          <button data-tool="brush" class="active">✏ Brush</button>
+          <button data-tool="eraser">⌫ Eraser</button>
+          <button data-tool="write" id="writeBtn">⌗ Write 0/1</button>
+        </div>
+        <button id="undo">↶ Undo</button>
+        <button id="clearCv">Clear</button>
+        <label>BG color <input type="color" id="bgColor" value="#ffffff"></label>
+        <button id="fillBg">Fill background</button>
+        <button id="uploadImgBtn">🖼 Upload image…</button>
+        <input type="file" id="bgImg" accept="image/*" hidden>
+      </div>
+      <div class="row">
+        <button id="downloadPng" class="primary">⬇ Download PNG</button>
+        <button id="toDecoder">Send drawing to decoder →</button>
+      </div>
+      <div class="stat" id="encStat"></div>
     </div>
+
     <div class="card">
-      <h3>Rendered output &mdash; click a download to save</h3>
-      <div class="grid">
-        <figure>
-          <figcaption>Original</figcaption>
-          <img id="img-orig" alt="original">
-        </figure>
-        <figure>
-          <figcaption>Basic</figcaption>
-          <img id="img-basic" alt="basic render">
-          <div><a id="dl-basic" class="dl"><button>Download basic</button></a></div>
-        </figure>
-        <figure>
-          <figcaption>Poster</figcaption>
-          <img id="img-poster" alt="poster render">
-          <div><a id="dl-poster" class="dl"><button>Download poster</button></a></div>
-        </figure>
+      <h3>Brush</h3>
+      <div class="row">
+        <label>Color <input type="color" id="brushColor" value="#111111"></label>
+        <label style="flex:1;">Size <input type="range" id="brushSize" min="1" max="60" value="6" style="flex:1;"></label>
+        <span id="sizeVal" class="hint">6&nbsp;px</span>
+      </div>
+      <div class="swatches" id="swatches"></div>
+    </div>
+
+    <div class="card">
+      <h3>Text → Binary</h3>
+      <textarea id="msg" rows="3" placeholder="Type a sentence to hide…">i love binary</textarea>
+      <div class="row">
+        <label>Format</label>
+        <div class="seg" id="fmt">
+          <button data-fmt="8" class="active">8-bit / char</button>
+          <button data-fmt="4">4-bit nibble pairs</button>
+        </div>
+        <label>Bytes/row <input type="number" id="perRow" min="1" max="64" value="8" style="width:60px;"></label>
+        <button id="translate" class="primary">Translate ↓</button>
+      </div>
+      <p class="hint" id="fmtHint"></p>
+      <textarea id="bits" rows="5" spellcheck="false" placeholder="The 0/1 appears here — edit it freely, then write it onto the canvas."></textarea>
+      <div class="row"><button id="copyBits">Copy</button></div>
+    </div>
+
+    <div class="card">
+      <h3>Write onto picture</h3>
+      <p class="hint">Pick <b>Write 0/1</b> above, then click the canvas to stamp the text box where you click.</p>
+      <div class="row">
+        <label>Ink <input type="color" id="binColor" value="#111111"></label>
+        <label>Size <input type="range" id="binSize" min="6" max="48" value="16"></label>
+        <span id="binSizeVal" class="hint">16&nbsp;px</span>
+        <label>Spacing <input type="range" id="binLead" min="100" max="240" value="140"></label>
+        <label><input type="checkbox" id="binBold"> Bold</label>
       </div>
     </div>
-  </div>
+  </section>
+
+  <!-- ===================== RIGHT: DECODE ===================== -->
+  <aside>
+    <div class="col-h"><h2>Decode</h2><span class="tag">read 0/1 hidden in artwork</span></div>
+
+    <div class="card">
+      <div id="drop">
+        <strong>Click to choose an image</strong> or drop one here
+        <small>PNG &middot; JPEG &middot; BMP &middot; TIFF &nbsp;|&nbsp; up to {{ max_mb }} MB &middot; nothing leaves your machine</small>
+        <input id="file" type="file" accept=".png,.jpg,.jpeg,.bmp,.tif,.tiff" hidden>
+      </div>
+      <div class="row" style="justify-content:center;">
+        <label>Style preset:
+          <select id="preset">
+            <option value="">default</option>
+            {% for p in presets %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+          </select>
+        </label>
+        <button id="go" class="primary" disabled>Decode</button>
+        <button id="resetDec" disabled>Clear</button>
+      </div>
+      <div id="status"></div>
+      <div id="error"></div>
+    </div>
+
+    <div id="results">
+      <div class="card">
+        <h3>Decoded text</h3>
+        <div id="decoded"></div>
+        <div id="secbanner"></div>
+      </div>
+      <div class="card">
+        <h3>Rendered output &mdash; click a download to save</h3>
+        <div class="grid">
+          <figure>
+            <figcaption>Original</figcaption>
+            <img id="img-orig" alt="original">
+          </figure>
+          <figure>
+            <figcaption>Basic</figcaption>
+            <img id="img-basic" alt="basic render">
+            <div><a id="dl-basic" class="dl"><button>Download basic</button></a></div>
+          </figure>
+          <figure>
+            <figcaption>Poster</figcaption>
+            <img id="img-poster" alt="poster render">
+            <div><a id="dl-poster" class="dl"><button>Download poster</button></a></div>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <footer>A PAFSKA project &middot; <span title="Logged for security purposes: truncated IP (/24), browser family, and timestamp. No uploaded images or decoded content are retained. Logs are deleted after 14 days.">Privacy: requests are logged for security (truncated IP, browser family, timestamp). No images or decoded content are stored. Logs deleted after 14 days.</span></footer>
 </main>
 
-<footer>DrawMeBinary &middot; <span title="Logged for security purposes: truncated IP (/24), browser family, and timestamp. No uploaded images or decoded content are retained. Logs are deleted after 14 days.">Privacy: requests are logged for security (truncated IP, browser family, timestamp). No images or decoded content are stored. Logs deleted after 14 days.</span></footer>
+<div id="lightbox" class="lb">
+  <div class="lb-cap">click anywhere to close</div>
+  <img id="lb-img" alt="enlarged result">
+</div>
 
 <script>
+/* =====================================================================
+   LEFT SIDE — paint + text→binary encoder
+   ===================================================================== */
+(function () {
+  const cv = document.getElementById('cv');     // freehand strokes layer
+  const ctx = cv.getContext('2d');
+  const bgcv = document.getElementById('bgcv'); // background layer
+  const bgctx = bgcv.getContext('2d');
+  const fxcv = document.getElementById('fxcv'); // movable 0/1 blocks + input
+  const fxctx = fxcv.getContext('2d');
+  const stat = document.getElementById('encStat');
+
+  // background layer starts white; drawing layer (cv) stays transparent
+  bgctx.fillStyle = '#ffffff'; bgctx.fillRect(0, 0, bgcv.width, bgcv.height);
+
+  // ---- movable 0/1 blocks ----
+  let blocks = [];        // {text, x, y, size, lead, color, bold}
+  let selected = null;    // index of selected block
+
+  function blockFont(b) {
+    return `${b.bold ? 'bold ' : ''}${b.size}px ui-monospace, Menlo, Consolas, monospace`;
+  }
+  function blockBox(b) {
+    fxctx.font = blockFont(b);
+    const lines = b.text.split('\n');
+    let w = 0;
+    lines.forEach(l => { w = Math.max(w, fxctx.measureText(l).width); });
+    const h = (lines.length - 1) * b.lead + b.size;
+    return { x: b.x, y: b.y, w: w, h: h };
+  }
+  function renderBlocks(showSel) {
+    fxctx.clearRect(0, 0, fxcv.width, fxcv.height);
+    blocks.forEach((b, i) => {
+      fxctx.save();
+      fxctx.fillStyle = b.color; fxctx.textBaseline = 'top'; fxctx.font = blockFont(b);
+      b.text.split('\n').forEach((l, k) => fxctx.fillText(l, b.x, b.y + k * b.lead));
+      fxctx.restore();
+      if (showSel !== false && i === selected) {
+        const bx = blockBox(b);
+        fxctx.save();
+        fxctx.strokeStyle = '#5b9dff'; fxctx.setLineDash([6, 4]); fxctx.lineWidth = 1.5;
+        fxctx.strokeRect(bx.x - PAD, bx.y - PAD, bx.w + 2 * PAD, bx.h + 2 * PAD);
+        // resize handle (bottom-right)
+        const h = handlePos(b);
+        fxctx.setLineDash([]); fxctx.fillStyle = '#5b9dff';
+        fxctx.fillRect(h.x - HANDLE / 2, h.y - HANDLE / 2, HANDLE, HANDLE);
+        fxctx.fillStyle = '#0b1220';
+        fxctx.fillRect(h.x - 1, h.y - HANDLE / 2 + 3, 2, HANDLE - 6);
+        fxctx.fillRect(h.x - HANDLE / 2 + 3, h.y - 1, HANDLE - 6, 2);
+        fxctx.restore();
+      }
+    });
+  }
+  function hitBlock(p) {
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const bx = blockBox(blocks[i]), pad = 6;
+      if (p.x >= bx.x - pad && p.x <= bx.x + bx.w + pad &&
+          p.y >= bx.y - pad && p.y <= bx.y + bx.h + pad) return i;
+    }
+    return -1;
+  }
+  const PAD = 6, HANDLE = 14;                 // selection padding + resize-handle size
+  function handlePos(b) {                      // bottom-right corner of the padded box
+    const bx = blockBox(b);
+    return { x: bx.x + bx.w + PAD, y: bx.y + bx.h + PAD };
+  }
+  function onHandle(p, b) {
+    const h = handlePos(b);
+    return Math.abs(p.x - h.x) <= HANDLE && Math.abs(p.y - h.y) <= HANDLE;
+  }
+
+  // flatten bg + strokes + blocks into one canvas (for export / decode)
+  function flatten() {
+    renderBlocks(false);                          // no selection outline in output
+    const t = document.createElement('canvas'); t.width = cv.width; t.height = cv.height;
+    const tc = t.getContext('2d');
+    tc.drawImage(bgcv, 0, 0); tc.drawImage(cv, 0, 0); tc.drawImage(fxcv, 0, 0);
+    renderBlocks(true);
+    return t;
+  }
+
+  // ---- undo (captures both the strokes layer and the 0/1 blocks) ----
+  const history = [], HMAX = 25;
+  function pushHistory() {
+    let img = null;
+    try { img = ctx.getImageData(0, 0, cv.width, cv.height); } catch (e) {}
+    history.push({ img: img, blocks: blocks.map(b => Object.assign({}, b)), sel: selected });
+    if (history.length > HMAX) history.shift();
+  }
+  function undo() {
+    if (!history.length) return;
+    const s = history.pop();
+    if (s.img) ctx.putImageData(s.img, 0, 0);
+    blocks = s.blocks.map(b => Object.assign({}, b));
+    selected = (s.sel != null && s.sel < blocks.length) ? s.sel : null;
+    renderBlocks(true);
+  }
+  document.getElementById('undo').addEventListener('click', undo);
+  window.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selected != null &&
+        document.activeElement === document.body) {
+      e.preventDefault(); pushHistory();
+      blocks.splice(selected, 1); selected = null; renderBlocks(true);
+    }
+  });
+
+  // ---- tools ----
+  let tool = 'brush';
+  const toolBar = document.getElementById('tools');
+  toolBar.addEventListener('click', e => {
+    const b = e.target.closest('button[data-tool]'); if (!b) return;
+    tool = b.dataset.tool;
+    [...toolBar.children].forEach(x => x.classList.toggle('active', x === b));
+    fxcv.style.cursor = tool === 'write' ? 'text' : 'crosshair';
+    if (tool !== 'write') { selected = null; renderBlocks(true); }
+    stat.textContent = tool === 'write'
+      ? 'Click empty space to place the 0/1 · click a block to move it.' : '';
+  });
+
+  // ---- brush ----
+  const brushColor = document.getElementById('brushColor');
+  const brushSize = document.getElementById('brushSize');
+  const sizeVal = document.getElementById('sizeVal');
+  brushSize.addEventListener('input', () => sizeVal.textContent = brushSize.value + ' px');
+  const SW = ['#111111', '#ffffff', '#ff5252', '#ffb454', '#ffe14d', '#5bd6a0', '#5b9dff', '#b07cff'];
+  const swatches = document.getElementById('swatches');
+  SW.forEach(c => { const d = document.createElement('div'); d.className = 'sw';
+    d.style.background = c; d.title = c;
+    d.addEventListener('click', () => { brushColor.value = c; }); swatches.appendChild(d); });
+
+  function pos(e) {
+    const r = fxcv.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * fxcv.width / r.width,
+             y: (e.clientY - r.top) * fxcv.height / r.height };
+  }
+
+  // ---- interaction (all pointer events land on the top fx layer) ----
+  let drawing = false, last = null;          // freehand state
+  let dragging = false, dragOff = null;      // block-drag state
+  let resizing = false, resizeStart = null;  // block-resize state
+  function startStroke(p) { drawing = true; last = p; pushHistory(); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; }
+  function moveStroke(p) {
+    if (!drawing) return;
+    ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
+    ctx.strokeStyle = brushColor.value;
+    ctx.lineWidth = +brushSize.value * (tool === 'eraser' ? 2 : 1);
+    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last = p;
+  }
+  function endStroke() { drawing = false; last = null; ctx.globalCompositeOperation = 'source-over'; }
+
+  fxcv.addEventListener('pointerdown', e => {
+    fxcv.setPointerCapture(e.pointerId);
+    const p = pos(e);
+    if (tool === 'write') {
+      // dragging the corner handle resizes the selected block
+      if (selected != null && onHandle(p, blocks[selected])) {
+        pushHistory();
+        resizing = true;
+        const b = blocks[selected], h = handlePos(b);
+        resizeStart = { dist: Math.hypot(h.x - b.x, h.y - b.y) || 1,
+                        size: b.size, lead: b.lead };
+        stat.textContent = 'Drag to resize the characters.';
+        return;
+      }
+      const hit = hitBlock(p);
+      pushHistory();
+      if (hit >= 0) {                          // grab an existing block to move it
+        selected = hit; dragging = true;
+        dragOff = { x: p.x - blocks[hit].x, y: p.y - blocks[hit].y };
+        syncBinControls(blocks[hit]);
+        stat.textContent = 'Drag to move · corner handle resizes · Delete removes.';
+      } else {                                 // place a new block from the text box
+        if (!placeBlock(p)) { history.pop(); return; }
+        selected = blocks.length - 1; dragging = true;
+        dragOff = { x: p.x - blocks[selected].x, y: p.y - blocks[selected].y };
+      }
+      renderBlocks(true);
+      return;
+    }
+    startStroke(p);
+  });
+  fxcv.addEventListener('pointermove', e => {
+    const p = pos(e);
+    if (tool === 'write') {
+      if (resizing && selected != null) {
+        const b = blocks[selected];
+        const scale = Math.hypot(p.x - b.x, p.y - b.y) / resizeStart.dist;
+        const ns = Math.max(6, Math.min(220, resizeStart.size * scale));
+        b.lead = resizeStart.lead * (ns / resizeStart.size);
+        b.size = ns;
+        syncBinControls(b);
+        renderBlocks(true);
+      } else if (dragging && selected != null) {
+        blocks[selected].x = p.x - dragOff.x;
+        blocks[selected].y = p.y - dragOff.y;
+        renderBlocks(true);
+      } else if (selected != null && onHandle(p, blocks[selected])) {
+        fxcv.style.cursor = 'nwse-resize';
+      } else {
+        fxcv.style.cursor = hitBlock(p) >= 0 ? 'move' : 'text';
+      }
+      return;
+    }
+    moveStroke(p);
+  });
+  function endAll() { endStroke(); dragging = false; dragOff = null; resizing = false; resizeStart = null; }
+  fxcv.addEventListener('pointerup', endAll);
+  fxcv.addEventListener('pointerleave', endAll);
+
+  // ---- background / image / clear / download ----
+  // fill the BACKGROUND layer — drawing stays on top, eraser reveals it
+  document.getElementById('fillBg').addEventListener('click', () => {
+    bgctx.fillStyle = document.getElementById('bgColor').value;
+    bgctx.fillRect(0, 0, bgcv.width, bgcv.height);
+    stat.textContent = 'Background filled.';
+  });
+  const bgImg = document.getElementById('bgImg');
+  document.getElementById('uploadImgBtn').addEventListener('click', () => bgImg.click());
+  bgImg.addEventListener('change', e => {
+    const f = e.target.files[0]; if (!f) return;
+    const img = new Image();
+    img.onload = () => {
+      // place the uploaded picture on the background layer (draw over it)
+      bgctx.fillStyle = '#ffffff'; bgctx.fillRect(0, 0, bgcv.width, bgcv.height);
+      const s = Math.min(bgcv.width / img.width, bgcv.height / img.height);
+      const w = img.width * s, h = img.height * s;
+      bgctx.drawImage(img, (bgcv.width - w) / 2, (bgcv.height - h) / 2, w, h);
+      URL.revokeObjectURL(img.src);
+      stat.textContent = 'Image loaded as background. Draw or write 0/1 over it.';
+    };
+    img.src = URL.createObjectURL(f);
+    bgImg.value = '';
+  });
+  document.getElementById('clearCv').addEventListener('click', () => {
+    ctx.clearRect(0, 0, cv.width, cv.height);                 // wipe drawing
+    bgctx.fillStyle = '#ffffff'; bgctx.fillRect(0, 0, bgcv.width, bgcv.height);
+    blocks = []; selected = null; renderBlocks(true);
+    history.length = 0; stat.textContent = 'Cleared.';
+  });
+  document.getElementById('downloadPng').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.download = 'drawmebinary.png'; a.href = flatten().toDataURL('image/png'); a.click();
+  });
+
+  // send the current picture (bg + drawing) to the decode side
+  document.getElementById('toDecoder').addEventListener('click', () => {
+    flatten().toBlob(blob => {
+      const file = new File([blob], 'drawing.png', { type: 'image/png' });
+      if (window.DMB && window.DMB.decodeFile) {
+        stat.textContent = 'Sent to decoder →';
+        window.DMB.decodeFile(file);
+      }
+    }, 'image/png');
+  });
+
+  // ---- text → binary ----
+  const msg = document.getElementById('msg');
+  const bits = document.getElementById('bits');
+  const perRow = document.getElementById('perRow');
+  const fmtBar = document.getElementById('fmt');
+  const fmtHint = document.getElementById('fmtHint');
+  let fmt = '8';
+  function setHint() {
+    fmtHint.textContent = fmt === '8'
+      ? 'Each character → one 8-bit byte, separated by spaces. Decodes directly.'
+      : 'Each byte → two 4-bit nibbles on paired rows (top = high, bottom = low). Monospace keeps columns aligned.';
+  }
+  fmtBar.addEventListener('click', e => {
+    const b = e.target.closest('button[data-fmt]'); if (!b) return;
+    fmt = b.dataset.fmt;
+    [...fmtBar.children].forEach(x => x.classList.toggle('active', x === b));
+    setHint();
+  });
+  setHint();
+
+  const bytesOf = s => Array.from(new TextEncoder().encode(s));
+  const byte8 = b => b.toString(2).padStart(8, '0');
+  const nib4 = n => n.toString(2).padStart(4, '0');
+
+  // rows of <= N bytes, never splitting a multi-byte character
+  function byteRows(text, N) {
+    const rows = []; let cur = [];
+    for (const ch of Array.from(text)) {
+      const cb = bytesOf(ch);
+      if (cur.length && cur.length + cb.length > N) { rows.push(cur); cur = []; }
+      cur.push(...cb);
+    }
+    if (cur.length) rows.push(cur);
+    return rows;
+  }
+  function translate() {
+    const N = Math.max(1, Math.min(64, +perRow.value || 8));
+    const rows = byteRows(msg.value, N);
+    let total = 0; rows.forEach(r => total += r.length);
+    bits.value = fmt === '8'
+      ? rows.map(r => r.map(byte8).join(' ')).join('\n')
+      : rows.map(r => r.map(b => nib4(b >> 4)).join(' ') + '\n'
+                    + r.map(b => nib4(b & 0xF)).join(' ')).join('\n');
+    stat.textContent = `Translated ${total} byte(s). Pick "Write 0/1", then click the canvas.`;
+  }
+  document.getElementById('translate').addEventListener('click', translate);
+  document.getElementById('copyBits').addEventListener('click', () => {
+    bits.select(); try { document.execCommand('copy'); } catch (e) {}
+    stat.textContent = 'Copied to clipboard.';
+  });
+
+  // ---- write 0/1 onto canvas ----
+  const binColor = document.getElementById('binColor');
+  const binSize = document.getElementById('binSize');
+  const binSizeVal = document.getElementById('binSizeVal');
+  const binLead = document.getElementById('binLead');
+  const binBold = document.getElementById('binBold');
+  binSize.addEventListener('input', () => binSizeVal.textContent = binSize.value + ' px');
+
+  // reflect a selected/resized block's properties back into the controls
+  function syncBinControls(b) {
+    binSize.value = Math.round(b.size);
+    binSizeVal.textContent = Math.round(b.size) + ' px';
+    binLead.value = Math.max(100, Math.min(240, Math.round(b.lead / b.size * 100)));
+    binColor.value = b.color;
+    binBold.checked = b.bold;
+  }
+
+  // create a movable block from the current text box at point p
+  function placeBlock(p) {
+    const content = bits.value;
+    if (!content.trim()) { stat.textContent = 'Nothing to write — translate a sentence first.'; return false; }
+    const sz = +binSize.value;
+    blocks.push({ text: content, x: p.x, y: p.y, size: sz,
+                  lead: sz * (+binLead.value / 100), color: binColor.value,
+                  bold: binBold.checked });
+    stat.textContent = 'Placed. Drag to move · Delete key removes it.';
+    return true;
+  }
+
+  // live-edit the selected block when the write controls change
+  function applyToSelected(fn) {
+    if (selected == null) return;
+    pushHistory(); fn(blocks[selected]); renderBlocks(true);
+  }
+  binColor.addEventListener('input', () => applyToSelected(b => b.color = binColor.value));
+  binBold.addEventListener('change', () => applyToSelected(b => b.bold = binBold.checked));
+  binSize.addEventListener('change', () => applyToSelected(b => {
+    b.lead = +binSize.value * (b.lead / b.size); b.size = +binSize.value; }));
+  binLead.addEventListener('change', () => applyToSelected(b => b.lead = b.size * (+binLead.value / 100)));
+
+  translate();
+})();
+
+/* =====================================================================
+   RIGHT SIDE — decode (uploads + drawings from the left)
+   ===================================================================== */
 (function () {
   const drop = document.getElementById('drop');
   const fileInput = document.getElementById('file');
   const go = document.getElementById('go');
-  const reset = document.getElementById('reset');
+  const reset = document.getElementById('resetDec');
   const status = document.getElementById('status');
   const errorEl = document.getElementById('error');
   const results = document.getElementById('results');
   const MAX_BYTES = {{ max_mb }} * 1024 * 1024;
   let chosen = null;
 
-  function setError(msg) { errorEl.textContent = msg || ''; }
-  function setStatus(msg) { status.textContent = msg || ''; }
+  const setError = m => errorEl.textContent = m || '';
+  const setStatus = m => status.textContent = m || '';
 
   function pick(file) {
     setError('');
@@ -136,7 +612,6 @@
     chosen = file;
     go.disabled = false; reset.disabled = false;
     setStatus('Ready: ' + file.name);
-    // local preview of the original (no server round-trip)
     const reader = new FileReader();
     reader.onload = e => { document.getElementById('img-orig').src = e.target.result; };
     reader.readAsDataURL(file);
@@ -155,20 +630,24 @@
     go.disabled = true; reset.disabled = true; setStatus(''); setError('');
   });
 
-  go.addEventListener('click', async () => {
-    if (!chosen) return;
-    go.disabled = true; setError(''); setStatus('Decoding…');
+  async function runDecode(file) {
+    if (!file) return;
+    chosen = file;
+    go.disabled = true; reset.disabled = false; setError(''); setStatus('Decoding…');
+    // preview the source
+    const reader = new FileReader();
+    reader.onload = e => { document.getElementById('img-orig').src = e.target.result; };
+    reader.readAsDataURL(file);
+
     const fd = new FormData();
-    fd.append('image', chosen);
+    fd.append('image', file);
     fd.append('preset', document.getElementById('preset').value);
     try {
       const resp = await fetch('/decode', { method: 'POST', body: fd });
       const data = await resp.json();
       if (!resp.ok) { setError(data.error || 'Request failed.'); setStatus(''); go.disabled = false; return; }
 
-      // untrusted decoded text -> textContent only, never innerHTML
       document.getElementById('decoded').textContent = data.text || '(nothing decoded)';
-
       const sec = document.getElementById('secbanner');
       if (data.security && data.security.code_suspect) {
         sec.textContent = '⚠ The decoded text looks like code (' +
@@ -177,12 +656,10 @@
         sec.style.display = 'block';
       } else { sec.style.display = 'none'; }
 
-      const stem = chosen.name.replace(/\.[^.]+$/, '') || 'image';
-      const basic = document.getElementById('img-basic');
-      const poster = document.getElementById('img-poster');
-      basic.src = data.basic; poster.src = data.poster;
-      const dlB = document.getElementById('dl-basic');
-      const dlP = document.getElementById('dl-poster');
+      const stem = (file.name || 'image').replace(/\.[^.]+$/, '') || 'image';
+      document.getElementById('img-basic').src = data.basic;
+      document.getElementById('img-poster').src = data.poster;
+      const dlB = document.getElementById('dl-basic'), dlP = document.getElementById('dl-poster');
       dlB.href = data.basic; dlB.download = stem + '_basic.png';
       dlP.href = data.poster; dlP.download = stem + '_poster.png';
 
@@ -192,7 +669,25 @@
       setError('Network error: ' + err.message); setStatus('');
     }
     go.disabled = false;
+  }
+
+  go.addEventListener('click', () => runDecode(chosen));
+
+  // ---- lightbox: click a result image to enlarge ----
+  const lb = document.getElementById('lightbox');
+  const lbImg = document.getElementById('lb-img');
+  ['img-orig', 'img-basic', 'img-poster'].forEach(id => {
+    const im = document.getElementById(id);
+    im.addEventListener('click', () => {
+      if (!im.src || im.src.endsWith('#')) return;
+      lbImg.src = im.src; lb.classList.add('open');
+    });
   });
+  lb.addEventListener('click', () => lb.classList.remove('open'));
+  window.addEventListener('keydown', e => { if (e.key === 'Escape') lb.classList.remove('open'); });
+
+  // expose for the "Send drawing to decoder" button on the left
+  window.DMB = { decodeFile: runDecode };
 })();
 </script>
 </body>

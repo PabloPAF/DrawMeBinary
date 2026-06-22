@@ -21,8 +21,9 @@ is disabled so there's no login. Don't expose these ports publicly as-is.
 ```bash
 # 1. produce some logs (from the project root)
 python webapp/app.py            # use the UI a few times, upload good/bad files
-#   or run the CLI:  python drawmebinary/main.py test/test_stop.png -b
 #   logs are written to   logs/security.jsonl
+#   (the future mobile project ships into the same SIEM with its own
+#    service.name - see SECURITY_LOGGING.md "Two projects, one SIEM")
 
 # 2. start the stack
 docker compose -f siem/docker-compose.yml up -d

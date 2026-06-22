@@ -9,8 +9,8 @@
 # and put OpenSearch on a private network.
 #
 # Usage:
-#   1. Generate some logs:  python webapp/app.py  (then use the UI), or run
-#      the CLI - logs land in ../logs/security.jsonl
+#   1. Generate some logs:  python webapp/app.py  (then use the UI)
+#      - logs land in ../logs/security.jsonl
 #   2. docker compose -f siem/docker-compose.yml up -d
 #   3. Open http://localhost:5601  ->  create index pattern  drawmebinary-logs-*
 #
