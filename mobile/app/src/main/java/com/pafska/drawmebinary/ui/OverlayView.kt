@@ -24,6 +24,9 @@ class OverlayView @JvmOverloads constructor(
     private var cells: List<Cell> = emptyList()
     private var srcAspect = 0.75f
     private var locked = false
+    private var roi: FloatArray? = null   // {l,t,r,b} fixed aim box
+
+    fun setRoi(l: Float, t: Float, r: Float, b: Float) { roi = floatArrayOf(l, t, r, b); invalidate() }
 
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE; strokeWidth = 6f
@@ -67,18 +70,19 @@ class OverlayView @JvmOverloads constructor(
         fun mapX(nx: Float) = ox + nx * fw
         fun mapY(ny: Float) = oy + ny * fh
 
+        // fixed aim box (where to line up the digits)
+        roi?.let { rg ->
+            canvas.drawRoundRect(
+                RectF(mapX(rg[0]), mapY(rg[1]), mapX(rg[2]), mapY(rg[3])), 14f, 14f, guidePaint
+            )
+        }
+
         val b = box
         if (b != null) {
             val pad = 10f
             canvas.drawRoundRect(
                 RectF(mapX(b.left) - pad, mapY(b.top) - pad, mapX(b.right) + pad, mapY(b.bottom) + pad),
                 16f, 16f, boxPaint
-            )
-        } else {
-            val gh = fh * 0.18f
-            canvas.drawRoundRect(
-                RectF(ox + fw * 0.08f, oy + fh / 2 - gh / 2, ox + fw * 0.92f, oy + fh / 2 + gh / 2),
-                14f, 14f, guidePaint
             )
         }
 

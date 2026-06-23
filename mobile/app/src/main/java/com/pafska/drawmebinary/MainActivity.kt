@@ -36,6 +36,13 @@ class MainActivity : AppCompatActivity() {
     private var lastCellsTs = 0L
     private val cellsHoldMs = 700L   // keep the last letters on screen briefly
 
+    // aim box (fraction of the upright frame): line the digits up inside it
+    private val roiL = 0.18f; private val roiT = 0.08f
+    private val roiR = 0.82f; private val roiB = 0.92f
+
+    // tap-to-capture: freeze the read so it can be examined steadily
+    private var frozen = false
+
     private val requestCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) startCamera()
@@ -48,6 +55,16 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         // FIT_CENTER so the overlay box lines up with the analyzed frame
         binding.previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
+        binding.overlay.setRoi(roiL, roiT, roiR, roiB)
+
+        // tap anywhere to freeze the current read; tap again to resume (clears it)
+        binding.overlay.setOnClickListener {
+            frozen = !frozen
+            if (!frozen) acc.reset()
+            android.widget.Toast.makeText(
+                this, if (frozen) "Frozen — tap to resume" else "Live", android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
 
         SecLog.init(applicationContext)
         SecLog.newCorrelation()
@@ -66,7 +83,7 @@ class MainActivity : AppCompatActivity() {
             context = this,
             lifecycleOwner = this,
             previewView = binding.previewView,
-            decoder = PrintedBinaryDecoder(),
+            decoder = PrintedBinaryDecoder(roiL, roiT, roiR, roiB),
             onFrame = ::onFrame
         ).also { it.start() }
     }
@@ -76,8 +93,9 @@ class MainActivity : AppCompatActivity() {
      * we hop to the main thread before touching any views.
      */
     private fun onFrame(stats: FrameAnalyzer.FrameStats) {
-        if (isFinishing || isDestroyed) return
+        if (isFinishing || isDestroyed || frozen) return
         runOnUiThread {
+            if (frozen) return@runOnUiThread
             val r = stats.result
             binding.statusText.text = String.format(
                 Locale.US,

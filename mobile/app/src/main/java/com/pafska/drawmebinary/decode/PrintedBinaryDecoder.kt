@@ -18,7 +18,21 @@ package com.pafska.drawmebinary.decode
  * snap the reticle to it. Constants are tuned for printed pages; see
  * docs/DECODER_PORT.md.
  */
-class PrintedBinaryDecoder : BinaryDecoder {
+class PrintedBinaryDecoder(
+    // analyze only this region of the (upright) frame — the aim box. Restricting
+    // to a central band removes surrounding clutter (IDE chrome, desk) so the
+    // grid detection is deterministic; the user lines the digits up inside it.
+    private val roiL: Float = 0.18f,
+    private val roiT: Float = 0.08f,
+    private val roiR: Float = 0.82f,
+    private val roiB: Float = 0.92f
+) : BinaryDecoder {
+
+    /** Map an ROI-local box (0..1 within the ROI) back to full-frame coords. */
+    private fun toFull(b: NormBox) = NormBox(
+        roiL + b.left * (roiR - roiL), roiT + b.top * (roiB - roiT),
+        roiL + b.right * (roiR - roiL), roiT + b.bottom * (roiB - roiT)
+    )
 
     // --- tuning knobs ---
     private val targetMax = 640       // longest upright edge after downscale
@@ -88,12 +102,16 @@ class PrintedBinaryDecoder : BinaryDecoder {
         if (rot == 90 || rot == 270) { upW = frame.height; upH = frame.width }
         else { upW = frame.width; upH = frame.height }
 
-        val scale = targetMax.toFloat() / maxOf(upW, upH)
-        val w = maxOf(1, (upW * scale).toInt())
-        val h = maxOf(1, (upH * scale).toInt())
+        // work on the ROI sub-rectangle, scaled up to targetMax (more detail there)
+        val upWf = upW.toFloat(); val upHf = upH.toFloat()
+        val roiWpx = (roiR - roiL) * upWf
+        val roiHpx = (roiB - roiT) * upHf
+        val scale = targetMax.toFloat() / maxOf(roiWpx, roiHpx)
+        val w = maxOf(1, (roiWpx * scale).toInt())
+        val h = maxOf(1, (roiHpx * scale).toInt())
         ensure(w, h)
 
-        sampleUpright(frame, rot, w, h, scale)
+        sampleUpright(frame, rot, w, h, scale, (roiL * upWf).toInt(), (roiT * upHf).toInt())
         System.arraycopy(gray, 0, graySharp, 0, w * h)  // keep a crisp copy
         blurGray(w, h)                                   // blurred copy drives detection only
         buildIntegral(w, h)
@@ -126,8 +144,8 @@ class PrintedBinaryDecoder : BinaryDecoder {
             return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rows.size, cols.size, lastGate)
 
         val xLeft = cols.first()[0]; val xRight = cols.last()[1]
-        val box = NormBox(xLeft.toFloat() / w, yTop.toFloat() / h,
-            xRight.toFloat() / w, yBot.toFloat() / h)
+        val box = toFull(NormBox(xLeft.toFloat() / w, yTop.toFloat() / h,
+            xRight.toFloat() / w, yBot.toFloat() / h))
         val glyphCount = rows.size * cols.size
 
         // --- read the grid ---
@@ -145,8 +163,8 @@ class PrintedBinaryDecoder : BinaryDecoder {
                 while (i + 8 <= bits.length) {
                     val ch = bitsToChar(bits.substring(i, i + 8))
                     sb.append(ch)
-                    cells.add(Cell(ch, NormBox(cols[i][0] / fw, rb[0] / fh,
-                        cols[i + 7][1] / fw, rb[1] / fh)))
+                    cells.add(Cell(ch, toFull(NormBox(cols[i][0] / fw, rb[0] / fh,
+                        cols[i + 7][1] / fw, rb[1] / fh))))
                     i += 8
                 }
             }
@@ -161,8 +179,8 @@ class PrintedBinaryDecoder : BinaryDecoder {
                     val ch = bitsToChar(hi.toString() + lo.toString())
                     sb.append(ch)
                     // one byte spans the two rows -> letter covers both
-                    cells.add(Cell(ch, NormBox(xLeft / fw, rows[i][0] / fh,
-                        xRight / fw, rows[i + 1][1] / fh)))
+                    cells.add(Cell(ch, toFull(NormBox(xLeft / fw, rows[i][0] / fh,
+                        xRight / fw, rows[i + 1][1] / fh))))
                 }
                 i += 2
             }
@@ -179,15 +197,16 @@ class PrintedBinaryDecoder : BinaryDecoder {
 
     // ---- stages -----------------------------------------------------------
 
-    private fun sampleUpright(frame: LumaFrame, rot: Int, w: Int, h: Int, scale: Float) {
+    private fun sampleUpright(frame: LumaFrame, rot: Int, w: Int, h: Int, scale: Float,
+                             oxUp: Int, oyUp: Int) {
         val rawW = frame.width; val rawH = frame.height
         val upW = if (rot == 90 || rot == 270) rawH else rawW
         val upH = if (rot == 90 || rot == 270) rawW else rawH
         var i = 0
         for (sy in 0 until h) {
-            val uy = (sy / scale).toInt().coerceIn(0, upH - 1)
+            val uy = (oyUp + (sy / scale).toInt()).coerceIn(0, upH - 1)
             for (sx in 0 until w) {
-                val ux = (sx / scale).toInt().coerceIn(0, upW - 1)
+                val ux = (oxUp + (sx / scale).toInt()).coerceIn(0, upW - 1)
                 val rx: Int; val ry: Int
                 when (rot) {
                     90 -> { rx = uy; ry = rawH - 1 - ux }
