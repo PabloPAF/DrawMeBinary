@@ -23,11 +23,12 @@ class PrintedBinaryDecoder : BinaryDecoder {
     // --- tuning knobs ---
     private val targetMax = 640       // longest upright edge after downscale
     private val adaptRadius = 22      // local-mean window radius (px, downscaled)
-    private val adaptC = 16           // how much darker than local mean = ink (higher = ignore faint texture)
+    private val adaptC = 12           // how much darker than local mean = ink (lower = catch fainter rows)
     private val minBrightGate = 70    // floor for the adaptive dark-on-light gate
     private val minInkFrac = 0.0008f
     private val maxInkFrac = 0.45f
-    private val bandFrac = 0.30f      // band threshold as fraction of projection peak
+    private val rowBandFrac = 0.18f   // rows: low threshold so faint rows aren't dropped
+    private val colBandFrac = 0.30f   // cols: higher threshold so texture doesn't fragment columns
     private val centerOneThresh = 0.5f
 
     // --- scratch buffers, reused across frames (analysis is single-threaded) ---
@@ -105,7 +106,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
             for (x in 0 until w) if (ink[base + x]) c++
             rowInk[y] = c
         }
-        val rows = findBands(rowInk, h, maxOf(3, (h * 0.02f).toInt()), maxOf(1, (h * 0.004f).toInt()))
+        val rows = findBands(rowInk, h, maxOf(2, (h * 0.015f).toInt()), maxOf(1, (h * 0.004f).toInt()), rowBandFrac)
         if (rows.size < 2)
             return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rows.size, 0, lastGate)
 
@@ -117,7 +118,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
             val base = y * w
             for (x in 0 until w) if (ink[base + x]) colInk[x]++
         }
-        val cols = findBands(colInk, w, maxOf(3, (w * 0.02f).toInt()), maxOf(1, (w * 0.004f).toInt()))
+        val cols = findBands(colInk, w, maxOf(3, (w * 0.02f).toInt()), maxOf(1, (w * 0.004f).toInt()), colBandFrac)
         if (cols.size < 2)
             return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rows.size, cols.size, lastGate)
 
@@ -240,7 +241,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
      * become bands; bands separated by <= mergeGap are joined; bands narrower
      * than minWidth (i.e. speckle, not a real row/column) are dropped.
      */
-    private fun findBands(proj: IntArray, n: Int, minWidth: Int, mergeGap: Int): List<IntArray> {
+    private fun findBands(proj: IntArray, n: Int, minWidth: Int, mergeGap: Int, frac: Float): List<IntArray> {
         val sm = smoothBuf
         val r = 1
         for (i in 0 until n) {
@@ -251,7 +252,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
         var peak = 0
         for (i in 0 until n) if (sm[i] > peak) peak = sm[i]
         if (peak == 0) return emptyList()
-        val thr = (peak * bandFrac).toInt().coerceAtLeast(1)
+        val thr = (peak * frac).toInt().coerceAtLeast(1)
 
         val raw = ArrayList<IntArray>()
         var st = -1
