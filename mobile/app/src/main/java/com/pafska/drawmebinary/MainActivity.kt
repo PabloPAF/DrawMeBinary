@@ -61,16 +61,22 @@ class MainActivity : AppCompatActivity() {
         ).also { it.start() }
     }
 
-    /** Called per analyzed frame on the main thread. */
+    /**
+     * Called per analyzed frame on the CameraX analysis thread (a background
+     * thread), so we MUST hop to the main thread before touching any views.
+     */
     private fun onFrame(stats: FrameAnalyzer.FrameStats) {
-        binding.statusText.text = String.format(
-            Locale.US,
-            "%.0f fps · %d×%d · %d ms · contrast %.2f · glyphs~%d",
-            stats.fps, stats.frameWidth, stats.frameHeight,
-            stats.analysisMs, stats.result.confidence, stats.result.glyphCount
-        )
-        // Decoder is stubbed: keep the scan hint until real text arrives.
-        if (stats.result.hasText) binding.decodedText.text = stats.result.text
+        if (isFinishing || isDestroyed) return
+        runOnUiThread {
+            binding.statusText.text = String.format(
+                Locale.US,
+                "%.0f fps · %d×%d · %d ms · contrast %.2f · glyphs~%d",
+                stats.fps, stats.frameWidth, stats.frameHeight,
+                stats.analysisMs, stats.result.confidence, stats.result.glyphCount
+            )
+            // Decoder is stubbed: keep the scan hint until real text arrives.
+            if (stats.result.hasText) binding.decodedText.text = stats.result.text
+        }
     }
 
     override fun onDestroy() {
