@@ -23,8 +23,8 @@ import kotlin.math.abs
 class PrintedBinaryDecoder : BinaryDecoder {
 
     // --- tuning knobs ---
-    private val targetMax = 480       // longest upright edge after downscale
-    private val adaptRadius = 18      // local-mean window radius (px, downscaled)
+    private val targetMax = 640       // longest upright edge after downscale
+    private val adaptRadius = 22      // local-mean window radius (px, downscaled)
     private val adaptC = 10           // how much darker than local mean = ink
     private val brightGate = 110      // surroundings must be this bright (dark-on-light)
     private val minInkFrac = 0.0008f

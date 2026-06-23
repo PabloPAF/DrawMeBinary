@@ -3,7 +3,6 @@ package com.pafska.drawmebinary
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.os.SystemClock
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.view.PreviewView
@@ -27,12 +26,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var camera: CameraController? = null
 
-    // temporal hold: keep the last confident decode on screen for a moment
-    private var lastText = ""
-    private var lastBox: NormBox? = null
-    private var lastTs = 0L
-    private val holdMs = 1500L
+    // temporal voting: show the consensus decode over recent frames, so a
+    // single noisy frame can't flicker the text. The box still tracks live.
+    private val recent = ArrayDeque<String>()
+    private val voteWindow = 15
+    private val voteMin = 5
     private val minConfidence = 0.5f
+    private var stableText = ""
+    private var lastBox: NormBox? = null
 
     private val requestCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -84,27 +85,24 @@ class MainActivity : AppCompatActivity() {
                 r.bitFormat.name.lowercase(), r.glyphCount, r.confidence
             )
 
-            val now = SystemClock.elapsedRealtime()
-            val fresh = r.hasText && r.confidence >= minConfidence
-            if (fresh) {
-                lastText = r.text; lastBox = r.box; lastTs = now
-            }
-            val holding = now - lastTs < holdMs && lastText.isNotEmpty()
+            // feed this frame's decode (or "" if none) into the vote window
+            recent.addLast(if (r.hasText && r.confidence >= minConfidence) r.text else "")
+            while (recent.size > voteWindow) recent.removeFirst()
+            val counts = recent.filter { it.isNotEmpty() }.groupingBy { it }.eachCount()
+            val best = counts.maxByOrNull { it.value }
 
             when {
-                fresh -> {
-                    binding.decodedText.text = r.text
-                    binding.overlay.setResult(r.box, stats.srcAspect, isLocked = true)
-                }
-                holding -> {
-                    binding.decodedText.text = lastText
-                    binding.overlay.setResult(r.box ?: lastBox, stats.srcAspect, isLocked = false)
-                }
-                else -> {
-                    binding.decodedText.text = getString(R.string.scan_hint)
-                    binding.overlay.setResult(r.box, stats.srcAspect, isLocked = false)
-                }
+                best != null && best.value >= voteMin -> stableText = best.key   // consensus
+                counts.isEmpty() -> stableText = ""                              // nothing in view
+                // else: transient noise — keep the last stable text
             }
+            binding.decodedText.text =
+                if (stableText.isNotEmpty()) stableText else getString(R.string.scan_hint)
+
+            // reticle tracks the live detection; green once we have stable text
+            lastBox = r.box ?: lastBox
+            binding.overlay.setResult(r.box ?: lastBox, stats.srcAspect,
+                isLocked = stableText.isNotEmpty())
         }
     }
 
