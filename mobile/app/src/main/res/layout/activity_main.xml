@@ -16,14 +16,11 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Scan reticle: indicates the band the decoder will read -->
-    <View
-        android:id="@+id/reticle"
+    <!-- Adaptive reticle: snaps to the detected binary block -->
+    <com.pafska.drawmebinary.ui.OverlayView
+        android:id="@+id/overlay"
         android:layout_width="0dp"
-        android:layout_height="120dp"
-        android:layout_marginStart="24dp"
-        android:layout_marginEnd="24dp"
-        android:background="@drawable/reticle_frame"
+        android:layout_height="0dp"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"

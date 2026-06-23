@@ -24,6 +24,8 @@ class FrameAnalyzer(
         val analysisMs: Long,
         val frameWidth: Int,
         val frameHeight: Int,
+        /** upright width/height of the frame (accounts for sensor rotation). */
+        val srcAspect: Float,
         val result: DecodeResult
     )
 
@@ -45,12 +47,18 @@ class FrameAnalyzer(
             lastTimestampNs = now
 
             val analysisMs = (System.nanoTime() - t0) / 1_000_000
+            val rot = ((frame.rotationDegrees % 360) + 360) % 360
+            val srcAspect = if (rot == 90 || rot == 270)
+                frame.height.toFloat() / frame.width
+            else
+                frame.width.toFloat() / frame.height
             onFrame(
                 FrameStats(
                     fps = emaFps,
                     analysisMs = analysisMs,
                     frameWidth = frame.width,
                     frameHeight = frame.height,
+                    srcAspect = srcAspect,
                     result = result
                 )
             )
