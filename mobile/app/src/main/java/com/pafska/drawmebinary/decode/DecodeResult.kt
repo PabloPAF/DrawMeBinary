@@ -3,6 +3,9 @@ package com.pafska.drawmebinary.decode
 /** A rectangle in normalized **upright** image coordinates (0..1). */
 data class NormBox(val left: Float, val top: Float, val right: Float, val bottom: Float)
 
+/** One decoded character positioned over the source digits it replaces. */
+data class Cell(val ch: Char, val box: NormBox)
+
 /**
  * Outcome of decoding one frame.
  *
@@ -23,7 +26,8 @@ data class DecodeResult(
     val rows: Int = 0,        // detected row stripes
     val cols: Int = 0,        // detected column stripes
     val gate: Int = 0,        // adaptive brightness gate used
-    val raw: String = ""      // raw per-frame decode incl. '·' (debug only)
+    val raw: String = "",     // raw per-frame decode incl. '·' (debug only)
+    val cells: List<Cell> = emptyList()  // per-character boxes for in-place overlay
 ) {
     val hasText: Boolean get() = text.isNotBlank()
 

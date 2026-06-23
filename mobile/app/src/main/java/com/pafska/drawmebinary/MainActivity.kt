@@ -3,6 +3,7 @@ package com.pafska.drawmebinary
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.view.PreviewView
@@ -26,13 +27,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var camera: CameraController? = null
 
-    // temporal voting: show the consensus decode over recent frames, so a
-    // single noisy frame can't flicker the text. The box still tracks live.
-    private val recent = ArrayDeque<String>()
-    private val voteWindow = 15
-    private val voteMin = 5
-    private val minConfidence = 0.5f
-    private var stableText = ""
+    // latch a confident read so a brief good frame persists on screen (the page
+    // is static, so a high-confidence decode is trustworthy to hold)
+    private val latchConf = 0.9f
+    private val holdMs = 2500L
+    private var latchText = ""
+    private var latchCells: List<com.pafska.drawmebinary.decode.Cell> = emptyList()
+    private var latchBox: NormBox? = null
+    private var latchTs = 0L
     private var lastBox: NormBox? = null
 
     private val requestCamera =
@@ -91,24 +93,23 @@ class MainActivity : AppCompatActivity() {
                 r.inkPct, r.rows, r.cols, r.gate, rawShown
             )
 
-            // feed this frame's decode (or "" if none) into the vote window
-            recent.addLast(if (r.hasText && r.confidence >= minConfidence) r.text else "")
-            while (recent.size > voteWindow) recent.removeFirst()
-            val counts = recent.filter { it.isNotEmpty() }.groupingBy { it }.eachCount()
-            val best = counts.maxByOrNull { it.value }
-
-            when {
-                best != null && best.value >= voteMin -> stableText = best.key   // consensus
-                counts.isEmpty() -> stableText = ""                              // nothing in view
-                // else: transient noise — keep the last stable text
+            val now = SystemClock.elapsedRealtime()
+            // latch a confident read; prefer a longer one, else refresh after hold
+            if (r.confidence >= latchConf && r.text.isNotBlank() &&
+                (r.text.length >= latchText.length || now - latchTs > holdMs)) {
+                latchText = r.text; latchCells = r.cells; latchBox = r.box; latchTs = now
             }
-            binding.decodedText.text =
-                if (stableText.isNotEmpty()) stableText else getString(R.string.scan_hint)
+            val holding = now - latchTs < holdMs && latchText.isNotEmpty()
 
-            // reticle tracks the live detection; green once we have stable text
             lastBox = r.box ?: lastBox
-            binding.overlay.setResult(r.box ?: lastBox, stats.srcAspect,
-                isLocked = stableText.isNotEmpty())
+            if (holding) {
+                binding.decodedText.text = latchText
+                binding.overlay.setResult(latchBox ?: lastBox, latchCells, stats.srcAspect, true)
+            } else {
+                latchText = ""
+                binding.decodedText.text = getString(R.string.scan_hint)
+                binding.overlay.setResult(r.box ?: lastBox, emptyList(), stats.srcAspect, false)
+            }
         }
     }
 

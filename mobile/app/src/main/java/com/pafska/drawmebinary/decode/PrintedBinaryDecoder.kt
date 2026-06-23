@@ -101,6 +101,8 @@ class PrintedBinaryDecoder : BinaryDecoder {
         // --- read the grid ---
         val c = cols.size
         val sb = StringBuilder()
+        val cells = ArrayList<Cell>()
+        val fw = w.toFloat(); val fh = h.toFloat()
         val fmt: BitFormat
         if (c >= 7) {                                   // 8-bit bytes per row
             fmt = BitFormat.EIGHT_BIT
@@ -108,7 +110,13 @@ class PrintedBinaryDecoder : BinaryDecoder {
                 val bits = StringBuilder()
                 for (cb in cols) bits.append(classifyCell(rb[0], rb[1], cb[0], cb[1], w, h))
                 var i = 0
-                while (i + 8 <= bits.length) { sb.append(bitsToChar(bits.substring(i, i + 8))); i += 8 }
+                while (i + 8 <= bits.length) {
+                    val ch = bitsToChar(bits.substring(i, i + 8))
+                    sb.append(ch)
+                    cells.add(Cell(ch, NormBox(cols[i][0] / fw, rb[0] / fh,
+                        cols[i + 7][1] / fw, rb[1] / fh)))
+                    i += 8
+                }
             }
         } else {                                        // 4-bit nibble pairs
             fmt = BitFormat.FOUR_BIT_NIBBLE
@@ -117,7 +125,13 @@ class PrintedBinaryDecoder : BinaryDecoder {
                 val hi = StringBuilder(); val lo = StringBuilder()
                 for (cb in cols) hi.append(classifyCell(rows[i][0], rows[i][1], cb[0], cb[1], w, h))
                 for (cb in cols) lo.append(classifyCell(rows[i + 1][0], rows[i + 1][1], cb[0], cb[1], w, h))
-                if (hi.length + lo.length == 8) sb.append(bitsToChar(hi.toString() + lo.toString()))
+                if (hi.length + lo.length == 8) {
+                    val ch = bitsToChar(hi.toString() + lo.toString())
+                    sb.append(ch)
+                    // one byte spans the two rows -> letter covers both
+                    cells.add(Cell(ch, NormBox(xLeft / fw, rows[i][0] / fh,
+                        xRight / fw, rows[i + 1][1] / fh)))
+                }
                 i += 2
             }
         }
@@ -127,7 +141,8 @@ class PrintedBinaryDecoder : BinaryDecoder {
             return DecodeResult("", 0f, fmt, glyphCount, box, inkPct, rows.size, cols.size, lastGate, raw)
         val printable = raw.count { it.code in 32..126 && it != '·' }
         val conf = printable.toFloat() / raw.length
-        return DecodeResult(raw.trim(), conf, fmt, glyphCount, box, inkPct, rows.size, cols.size, lastGate, raw)
+        return DecodeResult(raw.trim(), conf, fmt, glyphCount, box, inkPct,
+            rows.size, cols.size, lastGate, raw, cells)
     }
 
     // ---- stages -----------------------------------------------------------
