@@ -28,13 +28,14 @@ class PrintedBinaryDecoder : BinaryDecoder {
     private val minInkFrac = 0.0008f
     private val maxInkFrac = 0.45f
     private val rowBandFrac = 0.18f   // rows: low threshold so faint rows aren't dropped
-    private val colBandFrac = 0.30f   // cols: higher threshold so texture doesn't fragment columns
+    private val colBandFrac = 0.22f   // cols: enough to reject texture but keep narrow all-1 columns
     private val centerOneThresh = 0.5f
 
     // --- scratch buffers, reused across frames (analysis is single-threaded) ---
     private var sw = 0
     private var sh = 0
     private var gray = IntArray(0)
+    private var graySharp = IntArray(0)   // unblurred copy, for crisp 0/1 classification
     private var integ = LongArray(0)
     private var ink = BooleanArray(0)
     private var rowInk = IntArray(0)
@@ -47,6 +48,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
         if (w == sw && h == sh) return
         sw = w; sh = h
         gray = IntArray(w * h)
+        graySharp = IntArray(w * h)
         integ = LongArray((w + 1) * (h + 1))
         ink = BooleanArray(w * h)
         rowInk = IntArray(h)
@@ -92,7 +94,8 @@ class PrintedBinaryDecoder : BinaryDecoder {
         ensure(w, h)
 
         sampleUpright(frame, rot, w, h, scale)
-        blurGray(w, h)
+        System.arraycopy(gray, 0, graySharp, 0, w * h)  // keep a crisp copy
+        blurGray(w, h)                                   // blurred copy drives detection only
         buildIntegral(w, h)
         val frac = adaptiveThreshold(w, h)
         val inkPct = frac * 100f
@@ -272,8 +275,21 @@ class PrintedBinaryDecoder : BinaryDecoder {
         return merged.filter { it[1] - it[0] >= minWidth }
     }
 
-    /** '1' if the cell's centre is mostly ink (stroke), else '0' (hollow). */
+    /**
+     * '1' if the cell's centre is mostly ink (the vertical stroke), else '0'
+     * (hollow centre). Reads the SHARP image with a per-cell threshold so the
+     * hole of a '0' is preserved — blurring it shut was turning 0s into 1s.
+     */
     private fun classifyCell(y0: Int, y1: Int, x0: Int, x1: Int, w: Int, h: Int): Char {
+        // cell mean from the crisp image (dominated by the bright page)
+        var sum = 0L; var n = 0
+        for (yy in y0 until y1) {
+            val base = yy * w
+            for (xx in x0 until x1) { sum += graySharp[base + xx]; n++ }
+        }
+        if (n == 0) return '0'
+        val darkThr = (sum / n) * 7 / 10        // dark = clearly below the cell's mean
+
         val cw = x1 - x0; val ch = y1 - y0
         val ix0 = (x0 + cw * 0.25f).toInt().coerceIn(0, w - 1)
         val ix1 = (x1 - cw * 0.25f).toInt().coerceIn(ix0 + 1, w)
@@ -282,7 +298,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
         var inkc = 0; var tot = 0
         for (yy in iy0 until iy1) {
             val base = yy * w
-            for (xx in ix0 until ix1) { tot++; if (ink[base + xx]) inkc++ }
+            for (xx in ix0 until ix1) { tot++; if (graySharp[base + xx] < darkThr) inkc++ }
         }
         val centerFill = if (tot > 0) inkc.toFloat() / tot else 0f
         return if (centerFill >= centerOneThresh) '1' else '0'
