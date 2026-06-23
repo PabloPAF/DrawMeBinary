@@ -32,12 +32,15 @@ class OverlayView @JvmOverloads constructor(
         style = Paint.Style.STROKE; strokeWidth = 4f
         color = Color.parseColor("#665B9DFF")
     }
-    private val coverPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL; color = Color.parseColor("#F2101622")  // cover the digits
+    // letters are drawn with a dark stroke behind a white fill, so they stay
+    // legible over the picture WITHOUT an opaque panel (background stays visible)
+    private val letterStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; color = Color.parseColor("#CC000000")
+        textAlign = Paint.Align.CENTER; isFakeBoldText = true
     }
-    private val letterPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; textAlign = Paint.Align.CENTER
-        isFakeBoldText = true
+    private val letterFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL; color = Color.parseColor("#5BD6A0")
+        textAlign = Paint.Align.CENTER; isFakeBoldText = true
     }
 
     fun setResult(b: NormBox?, cells: List<Cell>, aspect: Float, isLocked: Boolean) {
@@ -79,19 +82,21 @@ class OverlayView @JvmOverloads constructor(
             )
         }
 
-        // substitute each decoded letter over its source digits
+        // substitute each decoded letter over its source digits, leaving the
+        // picture visible (no opaque panel). Size is capped so a single byte
+        // spanning a big region doesn't blow up to fill the whole box.
         for (cell in cells) {
             if (cell.ch == '·' || cell.ch == ' ') continue
             val l = mapX(cell.box.left); val t = mapY(cell.box.top)
             val r = mapX(cell.box.right); val bot = mapY(cell.box.bottom)
-            canvas.drawRoundRect(RectF(l, t, r, bot), 8f, 8f, coverPaint)
-            val cellH = bot - t
-            letterPaint.textSize = cellH * 0.7f
+            val size = ((bot - t) * 0.7f).coerceAtMost(fh * 0.06f).coerceAtLeast(14f)
+            letterStroke.textSize = size; letterFill.textSize = size
+            letterStroke.strokeWidth = size * 0.14f
             val cx = (l + r) / 2f
-            // vertically centre the glyph
-            val fm = letterPaint.fontMetrics
+            val fm = letterFill.fontMetrics
             val cy = (t + bot) / 2f - (fm.ascent + fm.descent) / 2f
-            canvas.drawText(cell.ch.toString(), cx, cy, letterPaint)
+            canvas.drawText(cell.ch.toString(), cx, cy, letterStroke)
+            canvas.drawText(cell.ch.toString(), cx, cy, letterFill)
         }
     }
 }

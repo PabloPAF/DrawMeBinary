@@ -95,7 +95,7 @@ class MainActivity : AppCompatActivity() {
 
             val now = SystemClock.elapsedRealtime()
             // latch a confident read; prefer a longer one, else refresh after hold
-            if (r.confidence >= latchConf && r.text.isNotBlank() &&
+            if (r.confidence >= latchConf && r.text.length >= 2 &&
                 (r.text.length >= latchText.length || now - latchTs > holdMs)) {
                 latchText = r.text; latchCells = r.cells; latchBox = r.box; latchTs = now
             }

@@ -39,6 +39,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
     private var rowInk = IntArray(0)
     private var colInk = IntArray(0)
     private var smoothBuf = IntArray(0)
+    private var blurBuf = IntArray(0)
     private var lastGate = 0          // brightness gate from the latest threshold pass
 
     private fun ensure(w: Int, h: Int) {
@@ -50,6 +51,32 @@ class PrintedBinaryDecoder : BinaryDecoder {
         rowInk = IntArray(h)
         colInk = IntArray(w)
         smoothBuf = IntArray(maxOf(w, h))
+        blurBuf = IntArray(w * h)
+    }
+
+    /**
+     * Light separable box blur (radius 2). This deliberately mimics a slightly
+     * out-of-focus capture: it smooths away fine screen text / moiré / paper
+     * texture so the bold 0/1 strokes dominate the projection. (The user noticed
+     * decoding worked better when the camera was NOT perfectly focused.)
+     */
+    private fun blurGray(w: Int, h: Int) {
+        val r = 2
+        for (y in 0 until h) {
+            val b = y * w
+            for (x in 0 until w) {
+                var s = 0; var n = 0; var k = maxOf(0, x - r); val e = minOf(w, x + r + 1)
+                while (k < e) { s += gray[b + k]; n++; k++ }
+                blurBuf[b + x] = s / n
+            }
+        }
+        for (x in 0 until w) {
+            for (y in 0 until h) {
+                var s = 0; var n = 0; var k = maxOf(0, y - r); val e = minOf(h, y + r + 1)
+                while (k < e) { s += blurBuf[k * w + x]; n++; k++ }
+                gray[y * w + x] = s / n
+            }
+        }
     }
 
     override fun decode(frame: LumaFrame): DecodeResult {
@@ -64,6 +91,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
         ensure(w, h)
 
         sampleUpright(frame, rot, w, h, scale)
+        blurGray(w, h)
         buildIntegral(w, h)
         val frac = adaptiveThreshold(w, h)
         val inkPct = frac * 100f
