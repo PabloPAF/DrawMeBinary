@@ -23,11 +23,11 @@ class PrintedBinaryDecoder : BinaryDecoder {
     // --- tuning knobs ---
     private val targetMax = 640       // longest upright edge after downscale
     private val adaptRadius = 22      // local-mean window radius (px, downscaled)
-    private val adaptC = 10           // how much darker than local mean = ink
+    private val adaptC = 16           // how much darker than local mean = ink (higher = ignore faint texture)
     private val brightGate = 110      // surroundings must be this bright (dark-on-light)
     private val minInkFrac = 0.0008f
     private val maxInkFrac = 0.45f
-    private val bandFrac = 0.15f      // band threshold as fraction of projection peak
+    private val bandFrac = 0.30f      // band threshold as fraction of projection peak
     private val centerOneThresh = 0.5f
 
     // --- scratch buffers, reused across frames (analysis is single-threaded) ---
@@ -38,6 +38,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
     private var ink = BooleanArray(0)
     private var rowInk = IntArray(0)
     private var colInk = IntArray(0)
+    private var smoothBuf = IntArray(0)
 
     private fun ensure(w: Int, h: Int) {
         if (w == sw && h == sh) return
@@ -47,6 +48,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
         ink = BooleanArray(w * h)
         rowInk = IntArray(h)
         colInk = IntArray(w)
+        smoothBuf = IntArray(maxOf(w, h))
     }
 
     override fun decode(frame: LumaFrame): DecodeResult {
@@ -72,7 +74,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
             for (x in 0 until w) if (ink[base + x]) c++
             rowInk[y] = c
         }
-        val rows = findBands(rowInk, h)
+        val rows = findBands(rowInk, h, maxOf(3, (h * 0.02f).toInt()), maxOf(1, (h * 0.004f).toInt()))
         if (rows.size < 2) return DecodeResult.EMPTY
 
         val yTop = rows.first()[0]; val yBot = rows.last()[1]
@@ -83,7 +85,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
             val base = y * w
             for (x in 0 until w) if (ink[base + x]) colInk[x]++
         }
-        val cols = findBands(colInk, w)
+        val cols = findBands(colInk, w, maxOf(3, (w * 0.02f).toInt()), maxOf(1, (w * 0.004f).toInt()))
         if (cols.size < 2) return DecodeResult.EMPTY
 
         val xLeft = cols.first()[0]; val xRight = cols.last()[1]
@@ -178,26 +180,40 @@ class PrintedBinaryDecoder : BinaryDecoder {
     }
 
     /**
-     * Turn a 1-D projection into stripes (bands) where it exceeds a fraction of
-     * its peak. Tiny bands (noise) are dropped relative to the median band size.
+     * Turn a 1-D projection into stripes (bands). The projection is smoothed to
+     * suppress single-pixel texture noise; runs above a fraction of the peak
+     * become bands; bands separated by <= mergeGap are joined; bands narrower
+     * than minWidth (i.e. speckle, not a real row/column) are dropped.
      */
-    private fun findBands(proj: IntArray, n: Int): List<IntArray> {
+    private fun findBands(proj: IntArray, n: Int, minWidth: Int, mergeGap: Int): List<IntArray> {
+        val sm = smoothBuf
+        val r = 1
+        for (i in 0 until n) {
+            var s = 0; var cnt = 0; var k = maxOf(0, i - r); val e = minOf(n, i + r + 1)
+            while (k < e) { s += proj[k]; cnt++; k++ }
+            sm[i] = s / cnt
+        }
         var peak = 0
-        for (i in 0 until n) if (proj[i] > peak) peak = proj[i]
+        for (i in 0 until n) if (sm[i] > peak) peak = sm[i]
         if (peak == 0) return emptyList()
         val thr = (peak * bandFrac).toInt().coerceAtLeast(1)
+
         val raw = ArrayList<IntArray>()
-        var s = -1
+        var st = -1
         for (i in 0 until n) {
-            val on = proj[i] > thr
-            if (on && s < 0) s = i
-            if (!on && s >= 0) { raw.add(intArrayOf(s, i)); s = -1 }
+            val on = sm[i] > thr
+            if (on && st < 0) st = i
+            if (!on && st >= 0) { raw.add(intArrayOf(st, i)); st = -1 }
         }
-        if (s >= 0) raw.add(intArrayOf(s, n))
-        if (raw.isEmpty()) return raw
-        val sizes = raw.map { it[1] - it[0] }.sorted()
-        val medSize = sizes[sizes.size / 2].coerceAtLeast(1)
-        return raw.filter { (it[1] - it[0]) >= medSize * 0.35 }
+        if (st >= 0) raw.add(intArrayOf(st, n))
+
+        val merged = ArrayList<IntArray>()
+        for (b in raw) {
+            val last = merged.lastOrNull()
+            if (last != null && b[0] - last[1] <= mergeGap) last[1] = b[1]
+            else merged.add(b)
+        }
+        return merged.filter { it[1] - it[0] >= minWidth }
     }
 
     /** '1' if the cell's centre is mostly ink (stroke), else '0' (hollow). */
