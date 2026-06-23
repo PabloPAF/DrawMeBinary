@@ -93,19 +93,21 @@ class MainActivity : AppCompatActivity() {
             )
 
             val now = SystemClock.elapsedRealtime()
-            // accumulate this frame's reads (empty frame still decays old votes)
-            acc.update(r.cells.map { it.ch })
-            if (r.cells.isNotEmpty()) { lastCells = r.cells; lastBox = r.box; lastCellsTs = now }
+            // only accumulate structurally-valid frames (exactly 4 or 8 columns);
+            // empty/invalid frames just decay old votes
+            val goodGrid = r.cells.isNotEmpty() && (r.cols == 4 || r.cols == 8)
+            acc.update(if (goodGrid) r.cells else emptyList())
+            if (goodGrid) { lastCells = r.cells; lastBox = r.box; lastCellsTs = now }
 
-            val msg = acc.message().trimEnd('·')
+            val msg = acc.message()
             binding.decodedText.text = if (msg.isNotBlank()) msg else getString(R.string.scan_hint)
 
-            // overlay: place the VOTED (stable) char over each current cell, so a
-            // transient misread shows the accumulated winner, not the bad guess
+            // overlay: place the VOTED char over each current cell (by its y), so
+            // a transient misread shows the accumulated winner, not the bad guess
             val fresh = now - lastCellsTs < cellsHoldMs
             val box = if (fresh) lastBox else r.box ?: lastBox
             val cells = if (fresh)
-                lastCells.mapIndexed { i, c -> Cell(acc.charAt(i) ?: c.ch, c.box) }
+                lastCells.map { c -> Cell(acc.charAtY((c.box.top + c.box.bottom) / 2f) ?: c.ch, c.box) }
             else emptyList()
             binding.overlay.setResult(box, cells, stats.srcAspect, isLocked = msg.isNotBlank())
         }
