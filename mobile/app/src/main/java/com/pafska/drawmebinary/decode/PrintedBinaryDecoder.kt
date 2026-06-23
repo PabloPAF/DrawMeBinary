@@ -25,9 +25,10 @@ class PrintedBinaryDecoder : BinaryDecoder {
     // --- tuning knobs ---
     private val targetMax = 480       // longest upright edge after downscale
     private val adaptRadius = 18      // local-mean window radius (px, downscaled)
-    private val adaptC = 8            // how much darker than local mean = ink
-    private val minInkFrac = 0.001f
-    private val maxInkFrac = 0.35f    // above this the threshold clearly failed
+    private val adaptC = 10           // how much darker than local mean = ink
+    private val brightGate = 110      // surroundings must be this bright (dark-on-light)
+    private val minInkFrac = 0.0008f
+    private val maxInkFrac = 0.45f    // above this the threshold clearly failed
     private val centerOneThresh = 0.5f
 
     // --- scratch buffers, reused across frames (analysis is single-threaded) ---
@@ -69,7 +70,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
         if (frac < minInkFrac || frac > maxInkFrac) return DecodeResult.EMPTY
 
         val glyphs = components(w, h)
-        if (glyphs.size < 4) return DecodeResult.EMPTY
+        if (glyphs.isEmpty()) return DecodeResult.EMPTY
 
         val heights = glyphs.map { it.h }.sorted()
         val medH = heights[heights.size / 2].coerceAtLeast(1)
@@ -79,7 +80,10 @@ class PrintedBinaryDecoder : BinaryDecoder {
                 (g.w.toFloat() / g.h) in 0.12f..1.4f &&
                 g.count >= g.w * g.h * 0.12f
         }
-        if (kept.size < 4) return DecodeResult.EMPTY
+        // report the detected box even before a successful decode, so the
+        // status line tells us whether detection or decoding is failing
+        val box = if (kept.isNotEmpty()) boxOf(kept, w, h) else null
+        if (kept.size < 4) return DecodeResult("", 0f, BitFormat.UNKNOWN, kept.size, box)
 
         // classify + group into lines (upright space: lines run horizontally)
         val bits = kept.map { GlyphBit(it, classify(it, w, h)) }
@@ -99,19 +103,12 @@ class PrintedBinaryDecoder : BinaryDecoder {
 
         val perLine = lines.map { it.size }.sorted()
         val medLen = perLine[perLine.size / 2]
+        val fmt = if (medLen >= 7) BitFormat.EIGHT_BIT else BitFormat.FOUR_BIT_NIBBLE
         val text = if (medLen >= 7) decode8bit(lines) else decode4bit(lines)
-        if (text.isBlank()) return DecodeResult.EMPTY
+        if (text.isBlank()) return DecodeResult("", 0f, fmt, kept.size, box)
 
         val printable = text.count { it.code in 32..126 }
         val conf = printable.toFloat() / text.length
-
-        val minX = kept.minOf { it.x }; val minY = kept.minOf { it.y }
-        val maxX = kept.maxOf { it.x + it.w }; val maxY = kept.maxOf { it.y + it.h }
-        val box = NormBox(
-            minX.toFloat() / w, minY.toFloat() / h,
-            maxX.toFloat() / w, maxY.toFloat() / h
-        )
-        val fmt = if (medLen >= 7) BitFormat.EIGHT_BIT else BitFormat.FOUR_BIT_NIBBLE
         return DecodeResult(text.trim(), conf, fmt, kept.size, box)
     }
 
@@ -164,7 +161,9 @@ class PrintedBinaryDecoder : BinaryDecoder {
                 val s = integ[y1 * w1 + x1] - integ[y0 * w1 + x1] -
                     integ[y1 * w1 + x0] + integ[y0 * w1 + x0]
                 val mean = (s / area).toInt()
-                val isInk = gray[y * w + x] < mean - adaptC
+                // dark-on-light only: the local surroundings must be bright, so
+                // sensor noise in dark areas (e.g. the desk/IDE) is not "ink".
+                val isInk = mean > brightGate && gray[y * w + x] < mean - adaptC
                 ink[y * w + x] = isInk
                 if (isInk) inkCount++
             }
@@ -215,6 +214,12 @@ class PrintedBinaryDecoder : BinaryDecoder {
         }
         val centerFill = if (tot > 0) inkc.toFloat() / tot else 0f
         return if (centerFill >= centerOneThresh) '1' else '0'
+    }
+
+    private fun boxOf(gs: List<Glyph>, w: Int, h: Int): NormBox {
+        val minX = gs.minOf { it.x }; val minY = gs.minOf { it.y }
+        val maxX = gs.maxOf { it.x + it.w }; val maxY = gs.maxOf { it.y + it.h }
+        return NormBox(minX.toFloat() / w, minY.toFloat() / h, maxX.toFloat() / w, maxY.toFloat() / h)
     }
 
     private fun decode8bit(lines: List<List<GlyphBit>>): String {
