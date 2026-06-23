@@ -17,7 +17,13 @@ data class DecodeResult(
     val confidence: Float,
     val bitFormat: BitFormat,
     val glyphCount: Int,
-    val box: NormBox? = null
+    val box: NormBox? = null,
+    // --- on-screen debug telemetry ---
+    val inkPct: Float = 0f,   // % of frame marked as ink
+    val rows: Int = 0,        // detected row stripes
+    val cols: Int = 0,        // detected column stripes
+    val gate: Int = 0,        // adaptive brightness gate used
+    val raw: String = ""      // raw per-frame decode incl. '·' (debug only)
 ) {
     val hasText: Boolean get() = text.isNotBlank()
 

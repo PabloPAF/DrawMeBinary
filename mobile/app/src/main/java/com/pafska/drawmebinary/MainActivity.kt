@@ -84,6 +84,12 @@ class MainActivity : AppCompatActivity() {
                 stats.fps, stats.frameWidth, stats.frameHeight, stats.analysisMs,
                 r.bitFormat.name.lowercase(), r.glyphCount, r.confidence
             )
+            val rawShown = if (r.raw.length > 28) r.raw.substring(0, 28) + "…" else r.raw
+            binding.debugText.text = String.format(
+                Locale.US,
+                "ink %.2f%% · rows %d · cols %d · gate %d · raw \"%s\"",
+                r.inkPct, r.rows, r.cols, r.gate, rawShown
+            )
 
             // feed this frame's decode (or "" if none) into the vote window
             recent.addLast(if (r.hasText && r.confidence >= minConfidence) r.text else "")

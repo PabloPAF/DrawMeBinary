@@ -39,6 +39,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
     private var rowInk = IntArray(0)
     private var colInk = IntArray(0)
     private var smoothBuf = IntArray(0)
+    private var lastGate = 0          // brightness gate from the latest threshold pass
 
     private fun ensure(w: Int, h: Int) {
         if (w == sw && h == sh) return
@@ -65,7 +66,9 @@ class PrintedBinaryDecoder : BinaryDecoder {
         sampleUpright(frame, rot, w, h, scale)
         buildIntegral(w, h)
         val frac = adaptiveThreshold(w, h)
-        if (frac < minInkFrac || frac > maxInkFrac) return DecodeResult.EMPTY
+        val inkPct = frac * 100f
+        if (frac < minInkFrac || frac > maxInkFrac)
+            return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, 0, 0, lastGate)
 
         // --- ROW stripes from the horizontal ink projection ---
         for (y in 0 until h) {
@@ -75,7 +78,8 @@ class PrintedBinaryDecoder : BinaryDecoder {
             rowInk[y] = c
         }
         val rows = findBands(rowInk, h, maxOf(3, (h * 0.02f).toInt()), maxOf(1, (h * 0.004f).toInt()))
-        if (rows.size < 2) return DecodeResult.EMPTY
+        if (rows.size < 2)
+            return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rows.size, 0, lastGate)
 
         val yTop = rows.first()[0]; val yBot = rows.last()[1]
 
@@ -86,7 +90,8 @@ class PrintedBinaryDecoder : BinaryDecoder {
             for (x in 0 until w) if (ink[base + x]) colInk[x]++
         }
         val cols = findBands(colInk, w, maxOf(3, (w * 0.02f).toInt()), maxOf(1, (w * 0.004f).toInt()))
-        if (cols.size < 2) return DecodeResult.EMPTY
+        if (cols.size < 2)
+            return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rows.size, cols.size, lastGate)
 
         val xLeft = cols.first()[0]; val xRight = cols.last()[1]
         val box = NormBox(xLeft.toFloat() / w, yTop.toFloat() / h,
@@ -117,11 +122,12 @@ class PrintedBinaryDecoder : BinaryDecoder {
             }
         }
 
-        val text = sb.toString()
-        if (text.isBlank()) return DecodeResult("", 0f, fmt, glyphCount, box)
-        val printable = text.count { it.code in 32..126 && it != '·' }
-        val conf = printable.toFloat() / text.length
-        return DecodeResult(text.trim(), conf, fmt, glyphCount, box)
+        val raw = sb.toString()
+        if (raw.isBlank())
+            return DecodeResult("", 0f, fmt, glyphCount, box, inkPct, rows.size, cols.size, lastGate, raw)
+        val printable = raw.count { it.code in 32..126 && it != '·' }
+        val conf = printable.toFloat() / raw.length
+        return DecodeResult(raw.trim(), conf, fmt, glyphCount, box, inkPct, rows.size, cols.size, lastGate, raw)
     }
 
     // ---- stages -----------------------------------------------------------
@@ -167,6 +173,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
         val total = integ[h * w1 + w]
         val globalMean = (total / (w.toLong() * h)).toInt()
         val gate = maxOf(minBrightGate, (globalMean * 0.85f).toInt())
+        lastGate = gate
         var inkCount = 0
         for (y in 0 until h) {
             val y0 = maxOf(0, y - r); val y1 = minOf(h, y + r + 1)

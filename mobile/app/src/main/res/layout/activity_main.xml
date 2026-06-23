@@ -41,6 +41,22 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- Second debug line: pipeline telemetry + raw per-frame decode -->
+    <TextView
+        android:id="@+id/debugText"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="12dp"
+        android:paddingBottom="10dp"
+        android:background="@color/scrim"
+        android:textColor="#9AD0FF"
+        android:textSize="12sp"
+        android:fontFamily="monospace"
+        android:text=""
+        app:layout_constraintTop_toBottomOf="@id/statusText"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
     <!-- Bottom: live decoded text (stubbed until the decoder lands) -->
     <TextView
         android:id="@+id/decodedText"
