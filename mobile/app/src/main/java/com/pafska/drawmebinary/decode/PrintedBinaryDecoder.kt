@@ -24,7 +24,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
     private val targetMax = 640       // longest upright edge after downscale
     private val adaptRadius = 22      // local-mean window radius (px, downscaled)
     private val adaptC = 16           // how much darker than local mean = ink (higher = ignore faint texture)
-    private val brightGate = 110      // surroundings must be this bright (dark-on-light)
+    private val minBrightGate = 70    // floor for the adaptive dark-on-light gate
     private val minInkFrac = 0.0008f
     private val maxInkFrac = 0.45f
     private val bandFrac = 0.30f      // band threshold as fraction of projection peak
@@ -162,6 +162,11 @@ class PrintedBinaryDecoder : BinaryDecoder {
     private fun adaptiveThreshold(w: Int, h: Int): Float {
         val w1 = w + 1
         val r = adaptRadius
+        // adaptive dark-on-light gate: "bright" is relative to the whole frame,
+        // so it works in dim light too (a fixed value rejected dim grey pages)
+        val total = integ[h * w1 + w]
+        val globalMean = (total / (w.toLong() * h)).toInt()
+        val gate = maxOf(minBrightGate, (globalMean * 0.85f).toInt())
         var inkCount = 0
         for (y in 0 until h) {
             val y0 = maxOf(0, y - r); val y1 = minOf(h, y + r + 1)
@@ -171,7 +176,7 @@ class PrintedBinaryDecoder : BinaryDecoder {
                 val s = integ[y1 * w1 + x1] - integ[y0 * w1 + x1] -
                     integ[y1 * w1 + x0] + integ[y0 * w1 + x0]
                 val mean = (s / area).toInt()
-                val isInk = mean > brightGate && gray[y * w + x] < mean - adaptC
+                val isInk = mean > gate && gray[y * w + x] < mean - adaptC
                 ink[y * w + x] = isInk
                 if (isInk) inkCount++
             }
