@@ -11,6 +11,8 @@ import androidx.core.content.ContextCompat
 import com.pafska.drawmebinary.camera.CameraController
 import com.pafska.drawmebinary.camera.FrameAnalyzer
 import com.pafska.drawmebinary.databinding.ActivityMainBinding
+import com.pafska.drawmebinary.decode.Cell
+import com.pafska.drawmebinary.decode.MessageAccumulator
 import com.pafska.drawmebinary.decode.NormBox
 import com.pafska.drawmebinary.decode.PrintedBinaryDecoder
 import com.pafska.drawmebinary.log.SecLog
@@ -27,15 +29,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var camera: CameraController? = null
 
-    // latch a confident read so a brief good frame persists on screen (the page
-    // is static, so a high-confidence decode is trustworthy to hold)
-    private val latchConf = 0.9f
-    private val holdMs = 2500L
-    private var latchText = ""
-    private var latchCells: List<com.pafska.drawmebinary.decode.Cell> = emptyList()
-    private var latchBox: NormBox? = null
-    private var latchTs = 0L
+    // fuse partial reads across frames; misreads self-correct via voting
+    private val acc = MessageAccumulator()
+    private var lastCells: List<Cell> = emptyList()
     private var lastBox: NormBox? = null
+    private var lastCellsTs = 0L
+    private val cellsHoldMs = 700L   // keep the last letters on screen briefly
 
     private val requestCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -94,22 +93,21 @@ class MainActivity : AppCompatActivity() {
             )
 
             val now = SystemClock.elapsedRealtime()
-            // latch a confident read; prefer a longer one, else refresh after hold
-            if (r.confidence >= latchConf && r.text.length >= 2 &&
-                (r.text.length >= latchText.length || now - latchTs > holdMs)) {
-                latchText = r.text; latchCells = r.cells; latchBox = r.box; latchTs = now
-            }
-            val holding = now - latchTs < holdMs && latchText.isNotEmpty()
+            // accumulate this frame's reads (empty frame still decays old votes)
+            acc.update(r.cells.map { it.ch })
+            if (r.cells.isNotEmpty()) { lastCells = r.cells; lastBox = r.box; lastCellsTs = now }
 
-            lastBox = r.box ?: lastBox
-            if (holding) {
-                binding.decodedText.text = latchText
-                binding.overlay.setResult(latchBox ?: lastBox, latchCells, stats.srcAspect, true)
-            } else {
-                latchText = ""
-                binding.decodedText.text = getString(R.string.scan_hint)
-                binding.overlay.setResult(r.box ?: lastBox, emptyList(), stats.srcAspect, false)
-            }
+            val msg = acc.message().trimEnd('·')
+            binding.decodedText.text = if (msg.isNotBlank()) msg else getString(R.string.scan_hint)
+
+            // overlay: place the VOTED (stable) char over each current cell, so a
+            // transient misread shows the accumulated winner, not the bad guess
+            val fresh = now - lastCellsTs < cellsHoldMs
+            val box = if (fresh) lastBox else r.box ?: lastBox
+            val cells = if (fresh)
+                lastCells.mapIndexed { i, c -> Cell(acc.charAt(i) ?: c.ch, c.box) }
+            else emptyList()
+            binding.overlay.setResult(box, cells, stats.srcAspect, isLocked = msg.isNotBlank())
         }
     }
 
