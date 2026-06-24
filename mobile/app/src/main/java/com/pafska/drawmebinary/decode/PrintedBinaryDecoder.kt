@@ -43,7 +43,6 @@ class PrintedBinaryDecoder(
     private val maxInkFrac = 0.45f
     private val rowBandFrac = 0.18f   // rows: low threshold so faint rows aren't dropped
     private val colBandFrac = 0.22f   // cols: enough to reject texture but keep narrow all-1 columns
-    private val centerOneThresh = 0.5f
 
     // --- scratch buffers, reused across frames (analysis is single-threaded) ---
     private var sw = 0
@@ -295,32 +294,43 @@ class PrintedBinaryDecoder(
     }
 
     /**
-     * '1' if the cell's centre is mostly ink (the vertical stroke), else '0'
-     * (hollow centre). Reads the SHARP image with a per-cell threshold so the
-     * hole of a '0' is preserved — blurring it shut was turning 0s into 1s.
+     * Classify a cell as '0' or '1' by COUNTING DARK RUNS across its width at
+     * several mid-heights, on the SHARP image:
+     *   - a '1' is a single vertical stroke -> ONE dark run
+     *   - a '0' is a ring -> dark | gap | dark -> TWO dark runs
+     * This shape/topology test is far more robust to font, size, blur and the
+     * exact threshold than measuring how "filled" the centre is.
      */
     private fun classifyCell(y0: Int, y1: Int, x0: Int, x1: Int, w: Int, h: Int): Char {
-        // cell mean from the crisp image (dominated by the bright page)
+        // per-cell threshold from the crisp image (cell mean is mostly bright page)
         var sum = 0L; var n = 0
         for (yy in y0 until y1) {
             val base = yy * w
             for (xx in x0 until x1) { sum += graySharp[base + xx]; n++ }
         }
         if (n == 0) return '0'
-        val darkThr = (sum / n) * 7 / 10        // dark = clearly below the cell's mean
-
+        val darkThr = (sum / n) * 7 / 10
         val cw = x1 - x0; val ch = y1 - y0
-        val ix0 = (x0 + cw * 0.25f).toInt().coerceIn(0, w - 1)
-        val ix1 = (x1 - cw * 0.25f).toInt().coerceIn(ix0 + 1, w)
-        val iy0 = (y0 + ch * 0.2f).toInt().coerceIn(0, h - 1)
-        val iy1 = (y1 - ch * 0.2f).toInt().coerceIn(iy0 + 1, h)
-        var inkc = 0; var tot = 0
-        for (yy in iy0 until iy1) {
-            val base = yy * w
-            for (xx in ix0 until ix1) { tot++; if (graySharp[base + xx] < darkThr) inkc++ }
+        val minRun = maxOf(2, (cw * 0.08f).toInt())   // ignore speckle-width runs
+
+        // sample mid-heights, where a '0' is hollow (two runs) and a '1' is solid
+        var ones = 0; var zeros = 0
+        for (f in floatArrayOf(0.38f, 0.44f, 0.50f, 0.56f, 0.62f)) {
+            val sy = (y0 + ch * f).toInt()
+            if (sy < 0 || sy >= h) continue
+            val base = sy * w
+            var runs = 0; var runLen = 0
+            for (xx in x0 until x1) {
+                if (graySharp[base + xx] < darkThr) runLen++
+                else { if (runLen >= minRun) runs++; runLen = 0 }
+            }
+            if (runLen >= minRun) runs++
+            when {
+                runs >= 2 -> zeros++
+                runs == 1 -> ones++
+            }
         }
-        val centerFill = if (tot > 0) inkc.toFloat() / tot else 0f
-        return if (centerFill >= centerOneThresh) '1' else '0'
+        return if (zeros > ones) '0' else '1'
     }
 
     private fun bitsToChar(b: String): Char {
