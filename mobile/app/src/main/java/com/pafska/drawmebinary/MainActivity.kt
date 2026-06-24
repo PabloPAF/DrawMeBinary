@@ -33,17 +33,17 @@ class MainActivity : AppCompatActivity() {
     private enum class Mode { LIVE, CAPTURING, FROZEN }
     private var mode = Mode.LIVE
 
-    private val recent = ArrayDeque<String>()      // reads collected within the current display window
-    private val goodConf = 0.9f
-    // analysis runs every frame, but the shown character only refreshes this
-    // often, holding the window's plurality winner so the readout stays calm
+    // raw per-frame reads (incl. '·') collected within the current display window
+    private val windowRaws = ArrayList<String>()
+    // analysis runs every frame, but the shown text only refreshes this often,
+    // holding the window's per-position vote so the readout stays calm
     private val displayMs = 800L
     private var lastDisplayTs = 0L
     private var emptyWindows = 0
 
-    private val captureReads = ArrayList<String>() // reads collected during a burst
+    private val captureRaws = ArrayList<String>()  // raws collected during a capture burst
     private var captureStart = 0L
-    private val captureMs = 1200L
+    private val captureMs = 1500L
 
     private var goodCells: List<Cell> = emptyList() // cells from the last good frame
     private var goodBox: NormBox? = null
@@ -70,11 +70,11 @@ class MainActivity : AppCompatActivity() {
         binding.overlay.setOnClickListener {
             when (mode) {
                 Mode.LIVE -> {
-                    mode = Mode.CAPTURING; captureReads.clear()
+                    mode = Mode.CAPTURING; captureRaws.clear()
                     captureStart = SystemClock.elapsedRealtime()
                     toast("Capturing… hold steady")
                 }
-                Mode.FROZEN -> { mode = Mode.LIVE; recent.clear(); toast("Live") }
+                Mode.FROZEN -> { mode = Mode.LIVE; windowRaws.clear(); toast("Live") }
                 Mode.CAPTURING -> {}
             }
         }
@@ -123,42 +123,41 @@ class MainActivity : AppCompatActivity() {
             )
             if (mode == Mode.FROZEN) return@runOnUiThread   // keep the frozen result
 
-            val good = (r.cols == 4 || r.cols == 8) && r.confidence >= goodConf && r.text.isNotBlank()
-            if (good) { goodCells = r.cells; goodBox = r.box }
+            // collect any structurally-valid frame (don't gate on confidence:
+            // per-position voting recovers the right byte from partial reads)
+            val validGrid = (r.cols == 4 || r.cols == 8) && r.rows >= 4 && r.raw.isNotBlank()
+            if (validGrid) { goodCells = r.cells; goodBox = r.box }
             val aspect = stats.srcAspect
             val now = SystemClock.elapsedRealtime()
 
             when (mode) {
                 Mode.LIVE -> {
-                    if (good) recent.addLast(r.text)   // analyse every frame
-                    // ...but only refresh the shown winner every displayMs (calm readout)
-                    if (now - lastDisplayTs >= displayMs) {
-                        val msg = plurality(recent)
+                    if (validGrid) windowRaws.add(r.raw)        // analyse every frame
+                    if (now - lastDisplayTs >= displayMs) {     // refresh shown text on interval
+                        val voted = votePerPosition(windowRaws)
+                        val msg = voted.trimEnd('·')
                         if (msg.isNotBlank()) {
                             binding.decodedText.text = msg
-                            val cells = if (msg.length == goodCells.size)
-                                goodCells.mapIndexed { i, c -> Cell(msg[i], c.box) } else goodCells
-                            binding.overlay.setResult(r.box ?: goodBox, cells, aspect, true)
+                            binding.overlay.setResult(goodBox, labelCells(voted), aspect, true)
                             emptyWindows = 0
-                        } else if (++emptyWindows >= 3) {           // lost it for a while -> clear
+                        } else if (++emptyWindows >= 3) {
                             binding.decodedText.text = getString(R.string.scan_hint)
-                            binding.overlay.setResult(r.box ?: goodBox, emptyList(), aspect, false)
+                            binding.overlay.setResult(goodBox, emptyList(), aspect, false)
                         }
-                        recent.clear(); lastDisplayTs = now
+                        windowRaws.clear(); lastDisplayTs = now
                     }
                 }
                 Mode.CAPTURING -> {
-                    if (good) captureReads.add(r.text)
-                    binding.decodedText.text = "capturing… (${captureReads.size})"
+                    if (validGrid) captureRaws.add(r.raw)
+                    binding.decodedText.text = "capturing… (${captureRaws.size})"
                     binding.overlay.setResult(r.box ?: goodBox, r.cells.ifEmpty { goodCells }, aspect, false)
                     if (now - captureStart > captureMs) {
-                        val result = plurality(captureReads)
+                        val voted = votePerPosition(captureRaws)
+                        val result = voted.trimEnd('·')
                         mode = Mode.FROZEN
                         binding.decodedText.text =
                             if (result.isNotBlank()) result else "Nothing captured — tap to retry"
-                        val cells = if (result.length == goodCells.size)
-                            goodCells.mapIndexed { i, c -> Cell(result[i], c.box) } else goodCells
-                        binding.overlay.setResult(goodBox, cells, aspect, result.isNotBlank())
+                        binding.overlay.setResult(goodBox, labelCells(voted), aspect, result.isNotBlank())
                     }
                 }
                 Mode.FROZEN -> {}
@@ -166,11 +165,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Most frequent non-empty string; ties broken toward the longer one. */
-    private fun plurality(xs: Collection<String>): String {
-        val counts = xs.filter { it.isNotBlank() }.groupingBy { it }.eachCount()
-        return counts.maxByOrNull { it.value * 1000 + it.key.length }?.key ?: ""
+    /**
+     * Per-byte majority vote across frames. Different frames misread different
+     * cells, so voting each position recovers the correct byte even when no
+     * single frame is fully right. Only frames of the modal length are voted
+     * (so partial/short reads don't shift the alignment); '·' casts no vote.
+     */
+    private fun votePerPosition(raws: List<String>): String {
+        if (raws.isEmpty()) return ""
+        val len = raws.groupingBy { it.length }.eachCount().maxByOrNull { it.value }?.key ?: return ""
+        val same = raws.filter { it.length == len }
+        val sb = StringBuilder()
+        for (i in 0 until len) {
+            val counts = HashMap<Char, Int>()
+            for (s in same) { val c = s[i]; if (c != '·' && c != ' ') counts[c] = (counts[c] ?: 0) + 1 }
+            sb.append(counts.maxByOrNull { it.value }?.key ?: '·')
+        }
+        return sb.toString()
     }
+
+    /** Map a voted string onto the last good cells' boxes (for the overlay). */
+    private fun labelCells(voted: String): List<Cell> =
+        goodCells.mapIndexed { i, c -> Cell(if (i < voted.length) voted[i] else '·', c.box) }
 
     private fun toast(msg: String) =
         android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
