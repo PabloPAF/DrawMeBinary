@@ -1,203 +1,245 @@
 package com.pafska.drawmebinary.decode
 
 /**
- * On-device decoder for clean **printed** 0/1 artwork, using a projection-based
- * grid read (robust to merged/split digits, unlike per-glyph segmentation):
+ * On-device decoder for printed 0/1 artwork. Validated end-to-end against the
+ * real source image (decodes "ENOUGH!").
  *
- *   1. rotation-aware downscale of the luma plane to an upright grayscale grid
- *   2. adaptive (local-mean) threshold, gated to dark-on-light, -> ink mask
- *   3. horizontal ink projection -> ROW stripes; vertical projection (within
- *      those rows) -> COLUMN stripes. This recovers the grid directly from ink
- *      density, so it doesn't matter if two digits touch or one breaks up.
- *   4. classify each grid cell as '1' (stroke through the centre) or '0'
- *      (hollow centre) by central ink fill.
- *   5. assemble: ~8 columns -> 8-bit bytes per row; ~4 columns -> 4-bit nibble
- *      pairs (top row = high nibble, bottom = low) - the web app's two layouts.
- *
- * Returns the detected block's bounding box (normalized, upright) so the UI can
- * snap the reticle to it. Constants are tuned for printed pages; see
- * docs/DECODER_PORT.md.
+ * Pipeline:
+ *   1. rotation-aware downscale of the aim-ROI to an upright grayscale grid
+ *   2. light blur + adaptive (dark-on-light) threshold -> ink mask
+ *   3. connected components -> candidate digit blobs (filtered by size)
+ *   4. GRID from the blobs: rows by clustering y-centres, column count from the
+ *      busiest rows, column x-positions by splitting the x-centres at the
+ *      largest gaps. (Projection-based columns failed: a thin all-'1' column has
+ *      little ink and adjacent digits touch — components + clustering are robust
+ *      to both.)
+ *   5. classify each (row,column) cell by counting dark runs across its width at
+ *      several mid-heights: a '0' is a ring (two runs at some height), a '1' is
+ *      one stroke (always one run). Decide '0' if >=2 sample heights show two
+ *      runs — using "any height" rather than a majority is what made 0s reliable.
+ *   6. assemble: K==4 -> 4-bit nibble pairs (top/bottom), K>=7 -> 8-bit bytes.
  */
 class PrintedBinaryDecoder(
-    // analyze only this region of the (upright) frame — the aim box. Restricting
-    // to a central band removes surrounding clutter (IDE chrome, desk) so the
-    // grid detection is deterministic; the user lines the digits up inside it.
     private val roiL: Float = 0.18f,
     private val roiT: Float = 0.08f,
     private val roiR: Float = 0.82f,
     private val roiB: Float = 0.92f
 ) : BinaryDecoder {
 
-    /** Map an ROI-local box (0..1 within the ROI) back to full-frame coords. */
-    private fun toFull(b: NormBox) = NormBox(
-        roiL + b.left * (roiR - roiL), roiT + b.top * (roiB - roiT),
-        roiL + b.right * (roiR - roiL), roiT + b.bottom * (roiB - roiT)
-    )
-
-    // --- tuning knobs ---
-    private val targetMax = 640       // longest upright edge after downscale
-    private val adaptRadius = 22      // local-mean window radius (px, downscaled)
-    private val adaptC = 12           // how much darker than local mean = ink (lower = catch fainter rows)
-    private val minBrightGate = 70    // floor for the adaptive dark-on-light gate
+    private val targetMax = 640
+    private val adaptRadius = 22
+    private val adaptC = 12
+    private val minBrightGate = 70
     private val minInkFrac = 0.0008f
     private val maxInkFrac = 0.45f
-    private val rowBandFrac = 0.18f   // rows: low threshold so faint rows aren't dropped
-    private val colBandFrac = 0.22f   // cols: enough to reject texture but keep narrow all-1 columns
 
-    // --- scratch buffers, reused across frames (analysis is single-threaded) ---
-    private var sw = 0
-    private var sh = 0
+    private var sw = 0; private var sh = 0
     private var gray = IntArray(0)
-    private var graySharp = IntArray(0)   // unblurred copy, for crisp 0/1 classification
+    private var graySharp = IntArray(0)
     private var integ = LongArray(0)
     private var ink = BooleanArray(0)
-    private var rowInk = IntArray(0)
-    private var colInk = IntArray(0)
-    private var smoothBuf = IntArray(0)
     private var blurBuf = IntArray(0)
-    private var lastGate = 0          // brightness gate from the latest threshold pass
+    private var labels = IntArray(0)
+    private var stack = IntArray(0)
+    private var lastGate = 0
 
     private fun ensure(w: Int, h: Int) {
         if (w == sw && h == sh) return
         sw = w; sh = h
-        gray = IntArray(w * h)
-        graySharp = IntArray(w * h)
-        integ = LongArray((w + 1) * (h + 1))
-        ink = BooleanArray(w * h)
-        rowInk = IntArray(h)
-        colInk = IntArray(w)
-        smoothBuf = IntArray(maxOf(w, h))
-        blurBuf = IntArray(w * h)
+        gray = IntArray(w * h); graySharp = IntArray(w * h)
+        integ = LongArray((w + 1) * (h + 1)); ink = BooleanArray(w * h)
+        blurBuf = IntArray(w * h); labels = IntArray(w * h); stack = IntArray(w * h)
     }
 
-    /**
-     * Light separable box blur (radius 2). This deliberately mimics a slightly
-     * out-of-focus capture: it smooths away fine screen text / moiré / paper
-     * texture so the bold 0/1 strokes dominate the projection. (The user noticed
-     * decoding worked better when the camera was NOT perfectly focused.)
-     */
-    private fun blurGray(w: Int, h: Int) {
-        val r = 2
-        for (y in 0 until h) {
-            val b = y * w
-            for (x in 0 until w) {
-                var s = 0; var n = 0; var k = maxOf(0, x - r); val e = minOf(w, x + r + 1)
-                while (k < e) { s += gray[b + k]; n++; k++ }
-                blurBuf[b + x] = s / n
-            }
-        }
-        for (x in 0 until w) {
-            for (y in 0 until h) {
-                var s = 0; var n = 0; var k = maxOf(0, y - r); val e = minOf(h, y + r + 1)
-                while (k < e) { s += blurBuf[k * w + x]; n++; k++ }
-                gray[y * w + x] = s / n
-            }
-        }
-    }
+    private fun toFull(b: NormBox) = NormBox(
+        roiL + b.left * (roiR - roiL), roiT + b.top * (roiB - roiT),
+        roiL + b.right * (roiR - roiL), roiT + b.bottom * (roiB - roiT)
+    )
 
     override fun decode(frame: LumaFrame): DecodeResult {
         val rot = ((frame.rotationDegrees % 360) + 360) % 360
         val upW: Int; val upH: Int
         if (rot == 90 || rot == 270) { upW = frame.height; upH = frame.width }
         else { upW = frame.width; upH = frame.height }
-
-        // work on the ROI sub-rectangle, scaled up to targetMax (more detail there)
         val upWf = upW.toFloat(); val upHf = upH.toFloat()
-        val roiWpx = (roiR - roiL) * upWf
-        val roiHpx = (roiB - roiT) * upHf
+        val roiWpx = (roiR - roiL) * upWf; val roiHpx = (roiB - roiT) * upHf
         val scale = targetMax.toFloat() / maxOf(roiWpx, roiHpx)
-        val w = maxOf(1, (roiWpx * scale).toInt())
-        val h = maxOf(1, (roiHpx * scale).toInt())
+        val w = maxOf(1, (roiWpx * scale).toInt()); val h = maxOf(1, (roiHpx * scale).toInt())
         ensure(w, h)
 
         sampleUpright(frame, rot, w, h, scale, (roiL * upWf).toInt(), (roiT * upHf).toInt())
-        System.arraycopy(gray, 0, graySharp, 0, w * h)  // keep a crisp copy
-        blurGray(w, h)                                   // blurred copy drives detection only
+        System.arraycopy(gray, 0, graySharp, 0, w * h)
+        blurGray(w, h)
         buildIntegral(w, h)
         val frac = adaptiveThreshold(w, h)
         val inkPct = frac * 100f
         if (frac < minInkFrac || frac > maxInkFrac)
             return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, 0, 0, lastGate)
 
-        // --- ROW stripes from the horizontal ink projection ---
-        for (y in 0 until h) {
-            var c = 0
-            val base = y * w
-            for (x in 0 until w) if (ink[base + x]) c++
-            rowInk[y] = c
+        // --- connected components ---
+        val comps = components(w, h)                  // each: intArrayOf(minx,miny,cw,ch)
+        if (comps.size < 4)
+            return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, 0, 0, lastGate)
+        val heights = comps.map { it[3] }.sorted()
+        val medH = heights[heights.size / 2].coerceAtLeast(1)
+        val kept = comps.filter {
+            it[3] >= medH * 0.4 && it[3] <= medH * 2.2 && it[2] >= 2 && it[2] <= medH * 2.5
         }
-        val rows = findBands(rowInk, h, maxOf(2, (h * 0.015f).toInt()), maxOf(1, (h * 0.004f).toInt()), rowBandFrac)
-        if (rows.size < 2)
-            return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rows.size, 0, lastGate)
+        if (kept.size < 4)
+            return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, 0, 0, lastGate)
 
-        val yTop = rows.first()[0]; val yBot = rows.last()[1]
+        // --- rows by clustering component y-centres ---
+        val cys = kept.map { it[1] + it[3] / 2 }.sorted()
+        val rowC = clusterByGap(cys, medH * 0.6f)
+        if (rowC.size < 2)
+            return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rowC.size, 0, lastGate)
 
-        // --- COLUMN stripes from the vertical projection within the rows ---
-        java.util.Arrays.fill(colInk, 0, w, 0)
-        for (y in yTop until yBot) {
-            val base = y * w
-            for (x in 0 until w) if (ink[base + x]) colInk[x]++
+        // --- column count K from how many blobs the busiest rows hold ---
+        val perRow = IntArray(rowC.size)
+        for (c in kept) {
+            val cy = c[1] + c[3] / 2
+            var bi = 0; var bd = Int.MAX_VALUE
+            for (i in rowC.indices) { val d = kotlin.math.abs(rowC[i] - cy); if (d < bd) { bd = d; bi = i } }
+            perRow[bi]++
         }
-        val cols = findBands(colInk, w, maxOf(3, (w * 0.02f).toInt()), maxOf(1, (w * 0.004f).toInt()), colBandFrac)
-        if (cols.size < 2)
-            return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rows.size, cols.size, lastGate)
+        val near4 = perRow.count { kotlin.math.abs(it - 4) <= 1 }
+        val near8 = perRow.count { kotlin.math.abs(it - 8) <= 1 }
+        val K = if (near8 > near4) 8 else 4
 
-        val xLeft = cols.first()[0]; val xRight = cols.last()[1]
-        val box = toFull(NormBox(xLeft.toFloat() / w, yTop.toFloat() / h,
-            xRight.toFloat() / w, yBot.toFloat() / h))
-        val glyphCount = rows.size * cols.size
+        // --- column x-positions by splitting x-centres at the largest gaps ---
+        val cxs = kept.map { it[0] + it[2] / 2 }.sorted()
+        val colC = columnCenters(cxs.toIntArray(), K)
+        if (colC.size < 2)
+            return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rowC.size, colC.size, lastGate)
+        val sp = if (colC.size > 1) median(IntArray(colC.size - 1) { colC[it + 1] - colC[it] }) else 16
+        val cellW = maxOf(6, (sp * 0.95f).toInt())
+        val half = medH * 0.6f
 
         // --- read the grid ---
-        val c = cols.size
-        val sb = StringBuilder()
-        val cells = ArrayList<Cell>()
+        val sb = StringBuilder(); val cells = ArrayList<Cell>()
         val fw = w.toFloat(); val fh = h.toFloat()
+        val xL = (colC.first() - cellW / 2) / fw; val xR = (colC.last() + cellW / 2) / fw
         val fmt: BitFormat
-        if (c >= 7) {                                   // 8-bit bytes per row
+        if (K >= 7) {
             fmt = BitFormat.EIGHT_BIT
-            for (rb in rows) {
+            for (rc in rowC) {
+                val y0 = (rc - half).toInt(); val y1 = (rc + half).toInt()
                 val bits = StringBuilder()
-                for (cb in cols) bits.append(classifyCell(rb[0], rb[1], cb[0], cb[1], w, h))
+                for (cx in colC) bits.append(classifyCell(y0, y1, cx - cellW / 2, cx + cellW / 2, w, h))
                 var i = 0
                 while (i + 8 <= bits.length) {
-                    val ch = bitsToChar(bits.substring(i, i + 8))
-                    sb.append(ch)
-                    cells.add(Cell(ch, toFull(NormBox(cols[i][0] / fw, rb[0] / fh,
-                        cols[i + 7][1] / fw, rb[1] / fh))))
-                    i += 8
+                    val ch = bitsToChar(bits.substring(i, i + 8)); sb.append(ch)
+                    cells.add(Cell(ch, toFull(NormBox(xL, y0 / fh, xR, y1 / fh)))); i += 8
                 }
             }
-        } else {                                        // 4-bit nibble pairs
+        } else {
             fmt = BitFormat.FOUR_BIT_NIBBLE
             var i = 0
-            while (i + 1 < rows.size) {
+            while (i + 1 < rowC.size) {
+                val ya0 = (rowC[i] - half).toInt(); val ya1 = (rowC[i] + half).toInt()
+                val yb0 = (rowC[i + 1] - half).toInt(); val yb1 = (rowC[i + 1] + half).toInt()
                 val hi = StringBuilder(); val lo = StringBuilder()
-                for (cb in cols) hi.append(classifyCell(rows[i][0], rows[i][1], cb[0], cb[1], w, h))
-                for (cb in cols) lo.append(classifyCell(rows[i + 1][0], rows[i + 1][1], cb[0], cb[1], w, h))
+                for (cx in colC) hi.append(classifyCell(ya0, ya1, cx - cellW / 2, cx + cellW / 2, w, h))
+                for (cx in colC) lo.append(classifyCell(yb0, yb1, cx - cellW / 2, cx + cellW / 2, w, h))
                 if (hi.length + lo.length == 8) {
-                    val ch = bitsToChar(hi.toString() + lo.toString())
-                    sb.append(ch)
-                    // one byte spans the two rows -> letter covers both
-                    cells.add(Cell(ch, toFull(NormBox(xLeft / fw, rows[i][0] / fh,
-                        xRight / fw, rows[i + 1][1] / fh))))
+                    val ch = bitsToChar(hi.toString() + lo.toString()); sb.append(ch)
+                    cells.add(Cell(ch, toFull(NormBox(xL, ya0 / fh, xR, yb1 / fh))))
                 }
                 i += 2
             }
         }
 
+        val box = toFull(NormBox(xL, (rowC.first() - half) / fh, xR, (rowC.last() + half) / fh))
+        val glyphCount = rowC.size * K
         val raw = sb.toString()
         if (raw.isBlank())
-            return DecodeResult("", 0f, fmt, glyphCount, box, inkPct, rows.size, cols.size, lastGate, raw)
+            return DecodeResult("", 0f, fmt, glyphCount, box, inkPct, rowC.size, K, lastGate, raw)
         val printable = raw.count { it.code in 32..126 && it != '·' }
         val conf = printable.toFloat() / raw.length
-        return DecodeResult(raw.trim(), conf, fmt, glyphCount, box, inkPct,
-            rows.size, cols.size, lastGate, raw, cells)
+        return DecodeResult(raw.trim(), conf, fmt, glyphCount, box, inkPct, rowC.size, K, lastGate, raw, cells)
     }
 
-    // ---- stages -----------------------------------------------------------
+    // ---- grid helpers -----------------------------------------------------
 
-    private fun sampleUpright(frame: LumaFrame, rot: Int, w: Int, h: Int, scale: Float,
-                             oxUp: Int, oyUp: Int) {
+    /** Cluster sorted values into groups split where the gap exceeds [gapThr]. */
+    private fun clusterByGap(sorted: List<Int>, gapThr: Float): IntArray {
+        val centers = ArrayList<Int>()
+        var sum = 0L; var cnt = 0; var last = sorted[0]
+        for (v in sorted) {
+            if (cnt > 0 && v - last > gapThr) { centers.add((sum / cnt).toInt()); sum = 0; cnt = 0 }
+            sum += v; cnt++; last = v
+        }
+        if (cnt > 0) centers.add((sum / cnt).toInt())
+        return centers.toIntArray()
+    }
+
+    /** K column centres: split sorted x-centres at the K-1 largest gaps. */
+    private fun columnCenters(xs: IntArray, K: Int): IntArray {
+        if (xs.size <= K) return xs
+        val idx = (1 until xs.size).sortedByDescending { xs[it] - xs[it - 1] }.take(K - 1).sorted()
+        val cuts = idx + xs.size
+        val centers = ArrayList<Int>(); var prev = 0
+        for (c in cuts) {
+            if (c > prev) {
+                var s = 0L; for (i in prev until c) s += xs[i]; centers.add((s / (c - prev)).toInt())
+            }
+            prev = c
+        }
+        return centers.toIntArray()
+    }
+
+    private fun median(a: IntArray): Int { val s = a.sortedArray(); return if (s.isEmpty()) 0 else s[s.size / 2] }
+
+    /** 4-connected flood-fill components: intArrayOf(minx, miny, w, h). */
+    private fun components(w: Int, h: Int): List<IntArray> {
+        java.util.Arrays.fill(labels, 0)
+        val out = ArrayList<IntArray>(); val n = w * h
+        for (start in 0 until n) {
+            if (!ink[start] || labels[start] != 0) continue
+            var sp = 0; stack[sp++] = start; labels[start] = 1
+            var minx = Int.MAX_VALUE; var maxx = 0; var miny = Int.MAX_VALUE; var maxy = 0
+            while (sp > 0) {
+                val p = stack[--sp]; val px = p % w; val py = p / w
+                if (px < minx) minx = px; if (px > maxx) maxx = px
+                if (py < miny) miny = py; if (py > maxy) maxy = py
+                if (px > 0)     { val q = p - 1; if (ink[q] && labels[q] == 0) { labels[q] = 1; stack[sp++] = q } }
+                if (px < w - 1) { val q = p + 1; if (ink[q] && labels[q] == 0) { labels[q] = 1; stack[sp++] = q } }
+                if (py > 0)     { val q = p - w; if (ink[q] && labels[q] == 0) { labels[q] = 1; stack[sp++] = q } }
+                if (py < h - 1) { val q = p + w; if (ink[q] && labels[q] == 0) { labels[q] = 1; stack[sp++] = q } }
+            }
+            out.add(intArrayOf(minx, miny, maxx - minx + 1, maxy - miny + 1))
+        }
+        return out
+    }
+
+    /** '0' if >=2 sample heights show two dark runs (ring); else '1' (one stroke). */
+    private fun classifyCell(y0: Int, y1: Int, x0: Int, x1: Int, w: Int, h: Int): Char {
+        val xa = x0.coerceIn(0, w - 1); val xb = x1.coerceIn(xa + 1, w)
+        val ya = y0.coerceIn(0, h - 1); val yb = y1.coerceIn(ya + 1, h)
+        var sum = 0L; var nn = 0
+        for (yy in ya until yb) { val base = yy * w; for (xx in xa until xb) { sum += graySharp[base + xx]; nn++ } }
+        if (nn == 0) return '0'
+        val darkThr = (sum / nn) * 7 / 10
+        val cw = xb - xa; val ch = yb - ya; val minRun = maxOf(2, (cw * 0.12f).toInt())
+        var twoRunHeights = 0
+        for (f in floatArrayOf(0.30f, 0.40f, 0.50f, 0.60f, 0.70f)) {
+            val sy = ya + (ch * f).toInt(); if (sy < 0 || sy >= h) continue
+            val base = sy * w; var runs = 0; var runLen = 0
+            for (xx in xa until xb) {
+                if (graySharp[base + xx] < darkThr) runLen++
+                else { if (runLen >= minRun) runs++; runLen = 0 }
+            }
+            if (runLen >= minRun) runs++
+            if (runs >= 2) twoRunHeights++
+        }
+        return if (twoRunHeights >= 2) '0' else '1'
+    }
+
+    private fun bitsToChar(b: String): Char { val v = b.toInt(2); return if (v in 32..126) v.toChar() else '·' }
+
+    // ---- pixel stages -----------------------------------------------------
+
+    private fun sampleUpright(frame: LumaFrame, rot: Int, w: Int, h: Int, scale: Float, oxUp: Int, oyUp: Int) {
         val rawW = frame.width; val rawH = frame.height
         val upW = if (rot == 90 || rot == 270) rawH else rawW
         val upH = if (rot == 90 || rot == 270) rawW else rawH
@@ -218,35 +260,42 @@ class PrintedBinaryDecoder(
         }
     }
 
-    private fun buildIntegral(w: Int, h: Int) {
-        val w1 = w + 1
+    private fun blurGray(w: Int, h: Int) {
+        val r = 2
         for (y in 0 until h) {
-            var rowsum = 0L
-            val rowBase = y * w
+            val b = y * w
             for (x in 0 until w) {
-                rowsum += gray[rowBase + x]
-                integ[(y + 1) * w1 + (x + 1)] = integ[y * w1 + (x + 1)] + rowsum
+                var s = 0; var n = 0; var k = maxOf(0, x - r); val e = minOf(w, x + r + 1)
+                while (k < e) { s += gray[b + k]; n++; k++ }; blurBuf[b + x] = s / n
+            }
+        }
+        for (x in 0 until w) {
+            for (y in 0 until h) {
+                var s = 0; var n = 0; var k = maxOf(0, y - r); val e = minOf(h, y + r + 1)
+                while (k < e) { s += blurBuf[k * w + x]; n++; k++ }; gray[y * w + x] = s / n
             }
         }
     }
 
-    private fun adaptiveThreshold(w: Int, h: Int): Float {
+    private fun buildIntegral(w: Int, h: Int) {
         val w1 = w + 1
-        val r = adaptRadius
-        // adaptive dark-on-light gate: "bright" is relative to the whole frame,
-        // so it works in dim light too (a fixed value rejected dim grey pages)
-        val total = integ[h * w1 + w]
-        val globalMean = (total / (w.toLong() * h)).toInt()
-        val gate = maxOf(minBrightGate, (globalMean * 0.85f).toInt())
-        lastGate = gate
+        for (y in 0 until h) {
+            var rowsum = 0L; val rowBase = y * w
+            for (x in 0 until w) { rowsum += gray[rowBase + x]; integ[(y + 1) * w1 + (x + 1)] = integ[y * w1 + (x + 1)] + rowsum }
+        }
+    }
+
+    private fun adaptiveThreshold(w: Int, h: Int): Float {
+        val w1 = w + 1; val r = adaptRadius
+        val total = integ[h * w1 + w]; val globalMean = (total / (w.toLong() * h)).toInt()
+        val gate = maxOf(minBrightGate, (globalMean * 0.85f).toInt()); lastGate = gate
         var inkCount = 0
         for (y in 0 until h) {
             val y0 = maxOf(0, y - r); val y1 = minOf(h, y + r + 1)
             for (x in 0 until w) {
                 val x0 = maxOf(0, x - r); val x1 = minOf(w, x + r + 1)
                 val area = (x1 - x0) * (y1 - y0)
-                val s = integ[y1 * w1 + x1] - integ[y0 * w1 + x1] -
-                    integ[y1 * w1 + x0] + integ[y0 * w1 + x0]
+                val s = integ[y1 * w1 + x1] - integ[y0 * w1 + x1] - integ[y1 * w1 + x0] + integ[y0 * w1 + x0]
                 val mean = (s / area).toInt()
                 val isInk = mean > gate && gray[y * w + x] < mean - adaptC
                 ink[y * w + x] = isInk
@@ -254,87 +303,5 @@ class PrintedBinaryDecoder(
             }
         }
         return inkCount.toFloat() / (w * h)
-    }
-
-    /**
-     * Turn a 1-D projection into stripes (bands). The projection is smoothed to
-     * suppress single-pixel texture noise; runs above a fraction of the peak
-     * become bands; bands separated by <= mergeGap are joined; bands narrower
-     * than minWidth (i.e. speckle, not a real row/column) are dropped.
-     */
-    private fun findBands(proj: IntArray, n: Int, minWidth: Int, mergeGap: Int, frac: Float): List<IntArray> {
-        val sm = smoothBuf
-        val r = 1
-        for (i in 0 until n) {
-            var s = 0; var cnt = 0; var k = maxOf(0, i - r); val e = minOf(n, i + r + 1)
-            while (k < e) { s += proj[k]; cnt++; k++ }
-            sm[i] = s / cnt
-        }
-        var peak = 0
-        for (i in 0 until n) if (sm[i] > peak) peak = sm[i]
-        if (peak == 0) return emptyList()
-        val thr = (peak * frac).toInt().coerceAtLeast(1)
-
-        val raw = ArrayList<IntArray>()
-        var st = -1
-        for (i in 0 until n) {
-            val on = sm[i] > thr
-            if (on && st < 0) st = i
-            if (!on && st >= 0) { raw.add(intArrayOf(st, i)); st = -1 }
-        }
-        if (st >= 0) raw.add(intArrayOf(st, n))
-
-        val merged = ArrayList<IntArray>()
-        for (b in raw) {
-            val last = merged.lastOrNull()
-            if (last != null && b[0] - last[1] <= mergeGap) last[1] = b[1]
-            else merged.add(b)
-        }
-        return merged.filter { it[1] - it[0] >= minWidth }
-    }
-
-    /**
-     * Classify a cell as '0' or '1' by COUNTING DARK RUNS across its width at
-     * several mid-heights, on the SHARP image:
-     *   - a '1' is a single vertical stroke -> ONE dark run
-     *   - a '0' is a ring -> dark | gap | dark -> TWO dark runs
-     * This shape/topology test is far more robust to font, size, blur and the
-     * exact threshold than measuring how "filled" the centre is.
-     */
-    private fun classifyCell(y0: Int, y1: Int, x0: Int, x1: Int, w: Int, h: Int): Char {
-        // per-cell threshold from the crisp image (cell mean is mostly bright page)
-        var sum = 0L; var n = 0
-        for (yy in y0 until y1) {
-            val base = yy * w
-            for (xx in x0 until x1) { sum += graySharp[base + xx]; n++ }
-        }
-        if (n == 0) return '0'
-        val darkThr = (sum / n) * 7 / 10
-        val cw = x1 - x0; val ch = y1 - y0
-        val minRun = maxOf(2, (cw * 0.08f).toInt())   // ignore speckle-width runs
-
-        // sample mid-heights, where a '0' is hollow (two runs) and a '1' is solid
-        var ones = 0; var zeros = 0
-        for (f in floatArrayOf(0.38f, 0.44f, 0.50f, 0.56f, 0.62f)) {
-            val sy = (y0 + ch * f).toInt()
-            if (sy < 0 || sy >= h) continue
-            val base = sy * w
-            var runs = 0; var runLen = 0
-            for (xx in x0 until x1) {
-                if (graySharp[base + xx] < darkThr) runLen++
-                else { if (runLen >= minRun) runs++; runLen = 0 }
-            }
-            if (runLen >= minRun) runs++
-            when {
-                runs >= 2 -> zeros++
-                runs == 1 -> ones++
-            }
-        }
-        return if (zeros > ones) '0' else '1'
-    }
-
-    private fun bitsToChar(b: String): Char {
-        val v = b.toInt(2)
-        return if (v in 32..126) v.toChar() else '·'
     }
 }
