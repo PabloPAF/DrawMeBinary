@@ -212,27 +212,37 @@ class PrintedBinaryDecoder(
         return out
     }
 
-    /** '0' if >=2 sample heights show two dark runs (ring); else '1' (one stroke). */
+    /**
+     * Classify a cell as '0' or '1'. A '0' is a ring (two dark runs at some
+     * mid-height); a '1' is one stroke (always one run). To be robust we
+     * ENSEMBLE over three dark thresholds and majority-vote: same pixels,
+     * different thresholds -> errors differ -> the vote recovers the truth.
+     */
     private fun classifyCell(y0: Int, y1: Int, x0: Int, x1: Int, w: Int, h: Int): Char {
         val xa = x0.coerceIn(0, w - 1); val xb = x1.coerceIn(xa + 1, w)
         val ya = y0.coerceIn(0, h - 1); val yb = y1.coerceIn(ya + 1, h)
         var sum = 0L; var nn = 0
         for (yy in ya until yb) { val base = yy * w; for (xx in xa until xb) { sum += graySharp[base + xx]; nn++ } }
         if (nn == 0) return '0'
-        val darkThr = (sum / nn) * 7 / 10
+        val mean = sum / nn
         val cw = xb - xa; val ch = yb - ya; val minRun = maxOf(2, (cw * 0.12f).toInt())
-        var twoRunHeights = 0
-        for (f in floatArrayOf(0.30f, 0.40f, 0.50f, 0.60f, 0.70f)) {
-            val sy = ya + (ch * f).toInt(); if (sy < 0 || sy >= h) continue
-            val base = sy * w; var runs = 0; var runLen = 0
-            for (xx in xa until xb) {
-                if (graySharp[base + xx] < darkThr) runLen++
-                else { if (runLen >= minRun) runs++; runLen = 0 }
+        var zeroVotes = 0
+        for (mult in intArrayOf(58, 70, 82)) {            // three dark thresholds
+            val darkThr = mean * mult / 100
+            var twoRunHeights = 0
+            for (f in floatArrayOf(0.30f, 0.40f, 0.50f, 0.60f, 0.70f)) {
+                val sy = ya + (ch * f).toInt(); if (sy < 0 || sy >= h) continue
+                val base = sy * w; var runs = 0; var runLen = 0
+                for (xx in xa until xb) {
+                    if (graySharp[base + xx] < darkThr) runLen++
+                    else { if (runLen >= minRun) runs++; runLen = 0 }
+                }
+                if (runLen >= minRun) runs++
+                if (runs >= 2) twoRunHeights++
             }
-            if (runLen >= minRun) runs++
-            if (runs >= 2) twoRunHeights++
+            if (twoRunHeights >= 2) zeroVotes++
         }
-        return if (twoRunHeights >= 2) '0' else '1'
+        return if (zeroVotes >= 2) '0' else '1'        // majority of the 3 thresholds
     }
 
     private fun bitsToChar(b: String): Char { val v = b.toInt(2); return if (v in 32..126) v.toChar() else '·' }

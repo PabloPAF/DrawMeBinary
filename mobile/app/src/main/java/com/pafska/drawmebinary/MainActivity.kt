@@ -12,7 +12,6 @@ import com.pafska.drawmebinary.camera.CameraController
 import com.pafska.drawmebinary.camera.FrameAnalyzer
 import com.pafska.drawmebinary.databinding.ActivityMainBinding
 import com.pafska.drawmebinary.decode.Cell
-import com.pafska.drawmebinary.decode.MessageAccumulator
 import com.pafska.drawmebinary.decode.NormBox
 import com.pafska.drawmebinary.decode.PrintedBinaryDecoder
 import com.pafska.drawmebinary.log.SecLog
@@ -29,19 +28,25 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var camera: CameraController? = null
 
-    // fuse partial reads across frames; misreads self-correct via voting
-    private val acc = MessageAccumulator()
-    private var lastCells: List<Cell> = emptyList()
-    private var lastBox: NormBox? = null
-    private var lastCellsTs = 0L
-    private val cellsHoldMs = 700L   // keep the last letters on screen briefly
+    // scan mode: LIVE shows the running best; tap starts a CAPTURE burst that
+    // collects reads for ~1.2s and locks the plurality result (FROZEN).
+    private enum class Mode { LIVE, CAPTURING, FROZEN }
+    private var mode = Mode.LIVE
+
+    private val recent = ArrayDeque<String>()      // recent high-conf live reads
+    private val recentMax = 12
+    private val goodConf = 0.9f
+
+    private val captureReads = ArrayList<String>() // reads collected during a burst
+    private var captureStart = 0L
+    private val captureMs = 1200L
+
+    private var goodCells: List<Cell> = emptyList() // cells from the last good frame
+    private var goodBox: NormBox? = null
 
     // aim box (fraction of the upright frame): line the digits up inside it
     private val roiL = 0.18f; private val roiT = 0.08f
     private val roiR = 0.82f; private val roiB = 0.92f
-
-    // tap-to-capture: freeze the read so it can be examined steadily
-    private var frozen = false
 
     private val requestCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -57,13 +62,17 @@ class MainActivity : AppCompatActivity() {
         binding.previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
         binding.overlay.setRoi(roiL, roiT, roiR, roiB)
 
-        // tap anywhere to freeze the current read; tap again to resume (clears it)
+        // tap: LIVE -> start a capture burst; FROZEN -> back to live
         binding.overlay.setOnClickListener {
-            frozen = !frozen
-            if (!frozen) acc.reset()
-            android.widget.Toast.makeText(
-                this, if (frozen) "Frozen — tap to resume" else "Live", android.widget.Toast.LENGTH_SHORT
-            ).show()
+            when (mode) {
+                Mode.LIVE -> {
+                    mode = Mode.CAPTURING; captureReads.clear()
+                    captureStart = SystemClock.elapsedRealtime()
+                    toast("Capturing… hold steady")
+                }
+                Mode.FROZEN -> { mode = Mode.LIVE; recent.clear(); toast("Live") }
+                Mode.CAPTURING -> {}
+            }
         }
 
         SecLog.init(applicationContext)
@@ -93,9 +102,8 @@ class MainActivity : AppCompatActivity() {
      * we hop to the main thread before touching any views.
      */
     private fun onFrame(stats: FrameAnalyzer.FrameStats) {
-        if (isFinishing || isDestroyed || frozen) return
+        if (isFinishing || isDestroyed) return
         runOnUiThread {
-            if (frozen) return@runOnUiThread
             val r = stats.result
             binding.statusText.text = String.format(
                 Locale.US,
@@ -109,27 +117,48 @@ class MainActivity : AppCompatActivity() {
                 "ink %.2f%% · rows %d · cols %d · gate %d · raw \"%s\"",
                 r.inkPct, r.rows, r.cols, r.gate, rawShown
             )
+            if (mode == Mode.FROZEN) return@runOnUiThread   // keep the frozen result
 
-            val now = SystemClock.elapsedRealtime()
-            // only accumulate structurally-valid frames (exactly 4 or 8 columns);
-            // empty/invalid frames just decay old votes
-            val goodGrid = r.cells.isNotEmpty() && (r.cols == 4 || r.cols == 8)
-            acc.update(if (goodGrid) r.cells else emptyList())
-            if (goodGrid) { lastCells = r.cells; lastBox = r.box; lastCellsTs = now }
+            val good = (r.cols == 4 || r.cols == 8) && r.confidence >= goodConf && r.text.isNotBlank()
+            if (good) { goodCells = r.cells; goodBox = r.box }
+            val aspect = stats.srcAspect
 
-            val msg = acc.message()
-            binding.decodedText.text = if (msg.isNotBlank()) msg else getString(R.string.scan_hint)
-
-            // overlay: place the VOTED char over each current cell (by its y), so
-            // a transient misread shows the accumulated winner, not the bad guess
-            val fresh = now - lastCellsTs < cellsHoldMs
-            val box = if (fresh) lastBox else r.box ?: lastBox
-            val cells = if (fresh)
-                lastCells.map { c -> Cell(acc.charAtY((c.box.top + c.box.bottom) / 2f) ?: c.ch, c.box) }
-            else emptyList()
-            binding.overlay.setResult(box, cells, stats.srcAspect, isLocked = msg.isNotBlank())
+            when (mode) {
+                Mode.LIVE -> {
+                    if (good) { recent.addLast(r.text); while (recent.size > recentMax) recent.removeFirst() }
+                    val msg = plurality(recent)
+                    binding.decodedText.text = if (msg.isNotBlank()) msg else getString(R.string.scan_hint)
+                    binding.overlay.setResult(r.box ?: goodBox,
+                        r.cells.ifEmpty { goodCells }, aspect, msg.isNotBlank())
+                }
+                Mode.CAPTURING -> {
+                    if (good) captureReads.add(r.text)
+                    binding.decodedText.text = "capturing… (${captureReads.size})"
+                    binding.overlay.setResult(r.box ?: goodBox, r.cells.ifEmpty { goodCells }, aspect, false)
+                    if (SystemClock.elapsedRealtime() - captureStart > captureMs) {
+                        val result = plurality(captureReads)
+                        mode = Mode.FROZEN
+                        binding.decodedText.text =
+                            if (result.isNotBlank()) result else "Nothing captured — tap to retry"
+                        // label the captured cells with the locked result
+                        val cells = if (result.length == goodCells.size)
+                            goodCells.mapIndexed { i, c -> Cell(result[i], c.box) } else goodCells
+                        binding.overlay.setResult(goodBox, cells, aspect, result.isNotBlank())
+                    }
+                }
+                Mode.FROZEN -> {}
+            }
         }
     }
+
+    /** Most frequent non-empty string; ties broken toward the longer one. */
+    private fun plurality(xs: Collection<String>): String {
+        val counts = xs.filter { it.isNotBlank() }.groupingBy { it }.eachCount()
+        return counts.maxByOrNull { it.value * 1000 + it.key.length }?.key ?: ""
+    }
+
+    private fun toast(msg: String) =
+        android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
 
     override fun onDestroy() {
         super.onDestroy()
