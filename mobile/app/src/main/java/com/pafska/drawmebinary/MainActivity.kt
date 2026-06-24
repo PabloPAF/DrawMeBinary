@@ -33,9 +33,13 @@ class MainActivity : AppCompatActivity() {
     private enum class Mode { LIVE, CAPTURING, FROZEN }
     private var mode = Mode.LIVE
 
-    private val recent = ArrayDeque<String>()      // recent high-conf live reads
-    private val recentMax = 12
+    private val recent = ArrayDeque<String>()      // reads collected within the current display window
     private val goodConf = 0.9f
+    // analysis runs every frame, but the shown character only refreshes this
+    // often, holding the window's plurality winner so the readout stays calm
+    private val displayMs = 800L
+    private var lastDisplayTs = 0L
+    private var emptyWindows = 0
 
     private val captureReads = ArrayList<String>() // reads collected during a burst
     private var captureStart = 0L
@@ -122,25 +126,36 @@ class MainActivity : AppCompatActivity() {
             val good = (r.cols == 4 || r.cols == 8) && r.confidence >= goodConf && r.text.isNotBlank()
             if (good) { goodCells = r.cells; goodBox = r.box }
             val aspect = stats.srcAspect
+            val now = SystemClock.elapsedRealtime()
 
             when (mode) {
                 Mode.LIVE -> {
-                    if (good) { recent.addLast(r.text); while (recent.size > recentMax) recent.removeFirst() }
-                    val msg = plurality(recent)
-                    binding.decodedText.text = if (msg.isNotBlank()) msg else getString(R.string.scan_hint)
-                    binding.overlay.setResult(r.box ?: goodBox,
-                        r.cells.ifEmpty { goodCells }, aspect, msg.isNotBlank())
+                    if (good) recent.addLast(r.text)   // analyse every frame
+                    // ...but only refresh the shown winner every displayMs (calm readout)
+                    if (now - lastDisplayTs >= displayMs) {
+                        val msg = plurality(recent)
+                        if (msg.isNotBlank()) {
+                            binding.decodedText.text = msg
+                            val cells = if (msg.length == goodCells.size)
+                                goodCells.mapIndexed { i, c -> Cell(msg[i], c.box) } else goodCells
+                            binding.overlay.setResult(r.box ?: goodBox, cells, aspect, true)
+                            emptyWindows = 0
+                        } else if (++emptyWindows >= 3) {           // lost it for a while -> clear
+                            binding.decodedText.text = getString(R.string.scan_hint)
+                            binding.overlay.setResult(r.box ?: goodBox, emptyList(), aspect, false)
+                        }
+                        recent.clear(); lastDisplayTs = now
+                    }
                 }
                 Mode.CAPTURING -> {
                     if (good) captureReads.add(r.text)
                     binding.decodedText.text = "capturing… (${captureReads.size})"
                     binding.overlay.setResult(r.box ?: goodBox, r.cells.ifEmpty { goodCells }, aspect, false)
-                    if (SystemClock.elapsedRealtime() - captureStart > captureMs) {
+                    if (now - captureStart > captureMs) {
                         val result = plurality(captureReads)
                         mode = Mode.FROZEN
                         binding.decodedText.text =
                             if (result.isNotBlank()) result else "Nothing captured — tap to retry"
-                        // label the captured cells with the locked result
                         val cells = if (result.length == goodCells.size)
                             goodCells.mapIndexed { i, c -> Cell(result[i], c.box) } else goodCells
                         binding.overlay.setResult(goodBox, cells, aspect, result.isNotBlank())
