@@ -55,7 +55,10 @@ class MainActivity : AppCompatActivity() {
 
     // optional cloud fallback for hard layouts (off by default; tap ☁ to enable)
     private var cloudEnabled = false
-    private val backendUrl = "https://pfffs-drawmebinary.hf.space/decode"  // verify/adjust to your Space
+    private val prefs by lazy { getSharedPreferences("dmb", MODE_PRIVATE) }
+    private var backendUrl: String
+        get() = prefs.getString("backend_url", "") ?: ""
+        set(v) { prefs.edit().putString("backend_url", v).apply() }
 
     private val requestCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -88,11 +91,14 @@ class MainActivity : AppCompatActivity() {
             lastFrame?.let { saveFrameAndShare(it) } ?: toast("No frame yet")
             true
         }
+        // tap ☁ to toggle; if no URL set yet, ask for it first. Long-press to edit URL.
         binding.cloudToggle.setOnClickListener {
+            if (!cloudEnabled && backendUrl.isBlank()) { editUrlDialog(); return@setOnClickListener }
             cloudEnabled = !cloudEnabled
             binding.cloudToggle.text = if (cloudEnabled) "☁ on" else "☁ off"
-            toast(if (cloudEnabled) "Cloud fallback on (sends frame when offline decode is weak)" else "Cloud off")
+            toast(if (cloudEnabled) "Cloud fallback on" else "Cloud off")
         }
+        binding.cloudToggle.setOnLongClickListener { editUrlDialog(); true }
 
         SecLog.init(applicationContext)
         SecLog.newCorrelation()
@@ -251,8 +257,29 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Prompt for / edit the cloud decoder endpoint URL (persisted). */
+    private fun editUrlDialog() {
+        val input = android.widget.EditText(this).apply {
+            setText(backendUrl)
+            hint = "https://your-space.hf.space/decode"
+            setSingleLine()
+            setPadding(48, 32, 48, 32)
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Cloud decoder URL")
+            .setMessage("The web /decode endpoint to use for hard layouts.")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                backendUrl = input.text.toString().trim()
+                toast(if (backendUrl.isBlank()) "URL cleared" else "Saved")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     /** On-device decode was weak: POST the frame to the web decoder (background). */
     private fun cloudFallback(f: com.pafska.drawmebinary.decode.LumaFrame) {
+        if (backendUrl.isBlank()) { binding.decodedText.text = "Set cloud URL — long-press ☁"; return }
         binding.decodedText.text = "checking cloud…"
         Thread {
             val bytes = com.pafska.drawmebinary.net.NetDecoder.pngBytes(frameToBitmap(f))
