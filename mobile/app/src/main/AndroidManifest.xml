@@ -4,6 +4,8 @@
     <!-- Live camera decoding: camera is required; no network needed (offline-first). -->
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- only used for the optional cloud fallback on hard layouts -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="false"

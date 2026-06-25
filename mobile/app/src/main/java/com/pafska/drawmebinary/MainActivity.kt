@@ -53,6 +53,10 @@ class MainActivity : AppCompatActivity() {
     private val roiL = 0.18f; private val roiT = 0.08f
     private val roiR = 0.82f; private val roiB = 0.92f
 
+    // optional cloud fallback for hard layouts (off by default; tap ☁ to enable)
+    private var cloudEnabled = false
+    private val backendUrl = "https://pfffs-drawmebinary.hf.space/decode"  // verify/adjust to your Space
+
     private val requestCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) startCamera()
@@ -83,6 +87,11 @@ class MainActivity : AppCompatActivity() {
         binding.overlay.setOnLongClickListener {
             lastFrame?.let { saveFrameAndShare(it) } ?: toast("No frame yet")
             true
+        }
+        binding.cloudToggle.setOnClickListener {
+            cloudEnabled = !cloudEnabled
+            binding.cloudToggle.text = if (cloudEnabled) "☁ on" else "☁ off"
+            toast(if (cloudEnabled) "Cloud fallback on (sends frame when offline decode is weak)" else "Cloud off")
         }
 
         SecLog.init(applicationContext)
@@ -162,9 +171,14 @@ class MainActivity : AppCompatActivity() {
                         val voted = votePerPosition(captureRaws)
                         val result = voted.trimEnd('·')
                         mode = Mode.FROZEN
-                        binding.decodedText.text =
-                            if (result.isNotBlank()) result else "Nothing captured — tap to retry"
                         binding.overlay.setResult(goodBox, labelCells(voted), aspect, result.isNotBlank())
+                        val letters = result.count { it.isLetter() }
+                        if (letters >= 2 || !cloudEnabled || lastFrame == null) {
+                            binding.decodedText.text =
+                                if (result.isNotBlank()) result else "Nothing captured — tap to retry"
+                        } else {
+                            cloudFallback(lastFrame!!)   // on-device weak -> try the web decoder
+                        }
                     }
                 }
                 Mode.FROZEN -> {}
@@ -198,26 +212,31 @@ class MainActivity : AppCompatActivity() {
     private fun toast(msg: String) =
         android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
 
+    /** Build an upright grayscale Bitmap from the frame's luma. */
+    private fun frameToBitmap(f: com.pafska.drawmebinary.decode.LumaFrame): android.graphics.Bitmap {
+        val rot = ((f.rotationDegrees % 360) + 360) % 360
+        val rawW = f.width; val rawH = f.height
+        val upW = if (rot == 90 || rot == 270) rawH else rawW
+        val upH = if (rot == 90 || rot == 270) rawW else rawH
+        val px = IntArray(upW * upH); var i = 0
+        for (uy in 0 until upH) for (ux in 0 until upW) {
+            val rx: Int; val ry: Int
+            when (rot) {
+                90 -> { rx = uy; ry = rawH - 1 - ux }
+                180 -> { rx = rawW - 1 - ux; ry = rawH - 1 - uy }
+                270 -> { rx = rawW - 1 - uy; ry = ux }
+                else -> { rx = ux; ry = uy }
+            }
+            val v = f.luma[ry.coerceIn(0, rawH - 1) * f.rowStride + rx.coerceIn(0, rawW - 1)].toInt() and 0xFF
+            px[i++] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+        }
+        return android.graphics.Bitmap.createBitmap(px, upW, upH, android.graphics.Bitmap.Config.ARGB_8888)
+    }
+
     /** Save the frame (rotated upright) as a PNG and open a share sheet. */
     private fun saveFrameAndShare(f: com.pafska.drawmebinary.decode.LumaFrame) {
         try {
-            val rot = ((f.rotationDegrees % 360) + 360) % 360
-            val rawW = f.width; val rawH = f.height
-            val upW = if (rot == 90 || rot == 270) rawH else rawW
-            val upH = if (rot == 90 || rot == 270) rawW else rawH
-            val px = IntArray(upW * upH); var i = 0
-            for (uy in 0 until upH) for (ux in 0 until upW) {
-                val rx: Int; val ry: Int
-                when (rot) {
-                    90 -> { rx = uy; ry = rawH - 1 - ux }
-                    180 -> { rx = rawW - 1 - ux; ry = rawH - 1 - uy }
-                    270 -> { rx = rawW - 1 - uy; ry = ux }
-                    else -> { rx = ux; ry = uy }
-                }
-                val v = f.luma[ry.coerceIn(0, rawH - 1) * f.rowStride + rx.coerceIn(0, rawW - 1)].toInt() and 0xFF
-                px[i++] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
-            }
-            val bmp = android.graphics.Bitmap.createBitmap(px, upW, upH, android.graphics.Bitmap.Config.ARGB_8888)
+            val bmp = frameToBitmap(f)
             val file = java.io.File(getExternalFilesDir(null), "dmb_frame_${System.currentTimeMillis()}.png")
             java.io.FileOutputStream(file).use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
             val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
@@ -230,6 +249,18 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             toast("Save failed: ${e.message}")
         }
+    }
+
+    /** On-device decode was weak: POST the frame to the web decoder (background). */
+    private fun cloudFallback(f: com.pafska.drawmebinary.decode.LumaFrame) {
+        binding.decodedText.text = "checking cloud…"
+        Thread {
+            val bytes = com.pafska.drawmebinary.net.NetDecoder.pngBytes(frameToBitmap(f))
+            val cloud = com.pafska.drawmebinary.net.NetDecoder.decode(backendUrl, bytes)
+            runOnUiThread {
+                binding.decodedText.text = cloud?.let { "☁ $it" } ?: "Nothing captured — tap to retry"
+            }
+        }.start()
     }
 
     override fun onDestroy() {

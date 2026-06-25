@@ -57,6 +57,19 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- Cloud fallback toggle (top-right) -->
+    <TextView
+        android:id="@+id/cloudToggle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:padding="10dp"
+        android:background="@color/scrim"
+        android:textColor="@color/white"
+        android:textSize="13sp"
+        android:text="☁ off"
+        app:layout_constraintTop_toBottomOf="@id/debugText"
+        app:layout_constraintEnd_toEndOf="parent" />
+
     <!-- Bottom: live decoded text (stubbed until the decoder lands) -->
     <TextView
         android:id="@+id/decodedText"
