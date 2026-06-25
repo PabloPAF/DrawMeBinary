@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- app-specific external files dir (no permission needed) -->
+    <external-files-path name="frames" path="." />
+</paths>

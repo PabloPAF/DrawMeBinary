@@ -26,7 +26,9 @@ class FrameAnalyzer(
         val frameHeight: Int,
         /** upright width/height of the frame (accounts for sensor rotation). */
         val srcAspect: Float,
-        val result: DecodeResult
+        val result: DecodeResult,
+        /** the frame's grayscale data, retained so it can be saved for debugging */
+        val frame: LumaFrame
     )
 
     private var lastTimestampNs = 0L
@@ -59,7 +61,8 @@ class FrameAnalyzer(
                     frameWidth = frame.width,
                     frameHeight = frame.height,
                     srcAspect = srcAspect,
-                    result = result
+                    result = result,
+                    frame = frame
                 )
             )
         } finally {

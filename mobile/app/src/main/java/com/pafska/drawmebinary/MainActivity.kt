@@ -47,6 +47,7 @@ class MainActivity : AppCompatActivity() {
 
     private var goodCells: List<Cell> = emptyList() // cells from the last good frame
     private var goodBox: NormBox? = null
+    private var lastFrame: com.pafska.drawmebinary.decode.LumaFrame? = null  // for save-frame debug
 
     // aim box (fraction of the upright frame): line the digits up inside it
     private val roiL = 0.18f; private val roiT = 0.08f
@@ -77,6 +78,11 @@ class MainActivity : AppCompatActivity() {
                 Mode.FROZEN -> { mode = Mode.LIVE; windowRaws.clear(); toast("Live") }
                 Mode.CAPTURING -> {}
             }
+        }
+        // long-press: save the exact frame (upright) and share it for debugging
+        binding.overlay.setOnLongClickListener {
+            lastFrame?.let { saveFrameAndShare(it) } ?: toast("No frame yet")
+            true
         }
 
         SecLog.init(applicationContext)
@@ -127,6 +133,7 @@ class MainActivity : AppCompatActivity() {
             // per-position voting recovers the right byte from partial reads)
             val validGrid = (r.cols == 4 || r.cols == 8) && r.rows >= 4 && r.raw.isNotBlank()
             if (validGrid) { goodCells = r.cells; goodBox = r.box }
+            lastFrame = stats.frame
             val aspect = stats.srcAspect
             val now = SystemClock.elapsedRealtime()
 
@@ -190,6 +197,40 @@ class MainActivity : AppCompatActivity() {
 
     private fun toast(msg: String) =
         android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
+
+    /** Save the frame (rotated upright) as a PNG and open a share sheet. */
+    private fun saveFrameAndShare(f: com.pafska.drawmebinary.decode.LumaFrame) {
+        try {
+            val rot = ((f.rotationDegrees % 360) + 360) % 360
+            val rawW = f.width; val rawH = f.height
+            val upW = if (rot == 90 || rot == 270) rawH else rawW
+            val upH = if (rot == 90 || rot == 270) rawW else rawH
+            val px = IntArray(upW * upH); var i = 0
+            for (uy in 0 until upH) for (ux in 0 until upW) {
+                val rx: Int; val ry: Int
+                when (rot) {
+                    90 -> { rx = uy; ry = rawH - 1 - ux }
+                    180 -> { rx = rawW - 1 - ux; ry = rawH - 1 - uy }
+                    270 -> { rx = rawW - 1 - uy; ry = ux }
+                    else -> { rx = ux; ry = uy }
+                }
+                val v = f.luma[ry.coerceIn(0, rawH - 1) * f.rowStride + rx.coerceIn(0, rawW - 1)].toInt() and 0xFF
+                px[i++] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+            }
+            val bmp = android.graphics.Bitmap.createBitmap(px, upW, upH, android.graphics.Bitmap.Config.ARGB_8888)
+            val file = java.io.File(getExternalFilesDir(null), "dmb_frame_${System.currentTimeMillis()}.png")
+            java.io.FileOutputStream(file).use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "image/png"
+                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(android.content.Intent.createChooser(share, "Share frame"))
+        } catch (e: Exception) {
+            toast("Save failed: ${e.message}")
+        }
+    }
 
     override fun onDestroy() {
         super.onDestroy()
