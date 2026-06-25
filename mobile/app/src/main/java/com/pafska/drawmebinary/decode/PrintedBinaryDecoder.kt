@@ -94,9 +94,10 @@ class PrintedBinaryDecoder(
         if (inl.size < 4)
             return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, 0, 0, lastGate)
 
-        // --- rows by clustering component y-centres ---
+        // --- rows by clustering component y-centres, then merge over-segmented
+        // splits using the row pitch (a tall '1' can split a row in two) ---
         val cys = inl.map { it[1] + it[3] / 2 }.sorted()
-        val rowC = clusterByGap(cys, medH * 0.6f)
+        val rowC = mergeRows(clusterByGap(cys, medH * 0.6f), medH)
         if (rowC.size < 2)
             return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rowC.size, 0, lastGate)
 
@@ -194,6 +195,21 @@ class PrintedBinaryDecoder(
         operator fun component2() = cells
         operator fun component3() = box
         operator fun component4() = fmt
+    }
+
+    /** Merge rows closer than ~0.55×pitch (over-segmentation from tall glyphs). */
+    private fun mergeRows(rc: IntArray, medH: Int): IntArray {
+        if (rc.size < 3) return rc
+        val gaps = IntArray(rc.size - 1) { rc[it + 1] - rc[it] }.sorted()
+        val medGap = gaps[gaps.size / 2]
+        val small = gaps.filter { it < medGap * 1.6 }
+        val pitch = if (small.isNotEmpty()) small[small.size / 2] else medH
+        val out = ArrayList<Int>(); out.add(rc[0])
+        for (i in 1 until rc.size) {
+            if (rc[i] - out.last() < pitch * 0.55f) out[out.size - 1] = (out.last() + rc[i]) / 2
+            else out.add(rc[i])
+        }
+        return out.toIntArray()
     }
 
     /** Reward letters and character variety; degenerate repeating patterns score ~0. */
