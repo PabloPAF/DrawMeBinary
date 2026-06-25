@@ -57,6 +57,14 @@ class PrintedBinaryDecoder(
     )
 
     override fun decode(frame: LumaFrame): DecodeResult {
+        // try both polarities (dark-on-light AND light-on-dark) and keep the
+        // most letter-like result, so inverted artwork (white text on dark) reads
+        val a = run(frame, invert = false)
+        val b = run(frame, invert = true)
+        return if (letterScore(b.raw) > letterScore(a.raw)) b else a
+    }
+
+    private fun run(frame: LumaFrame, invert: Boolean): DecodeResult {
         val rot = ((frame.rotationDegrees % 360) + 360) % 360
         val upW: Int; val upH: Int
         if (rot == 90 || rot == 270) { upW = frame.height; upH = frame.width }
@@ -68,6 +76,7 @@ class PrintedBinaryDecoder(
         ensure(w, h)
 
         sampleUpright(frame, rot, w, h, scale, (roiL * upWf).toInt(), (roiT * upHf).toInt())
+        if (invert) for (i in 0 until w * h) gray[i] = 255 - gray[i]
         System.arraycopy(gray, 0, graySharp, 0, w * h)
         blurGray(w, h)
         buildIntegral(w, h)
