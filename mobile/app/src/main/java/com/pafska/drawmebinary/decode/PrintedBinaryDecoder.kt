@@ -88,37 +88,68 @@ class PrintedBinaryDecoder(
         if (kept.size < 4)
             return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, 0, 0, lastGate)
 
+        // reject outlier blobs by x (e.g. a stray cursor) before finding columns
+        val (xlo, xhi) = tukeyBounds(kept.map { it[0] + it[2] / 2 })
+        val inl = kept.filter { val cx = it[0] + it[2] / 2; cx in xlo..xhi }
+        if (inl.size < 4)
+            return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, 0, 0, lastGate)
+
         // --- rows by clustering component y-centres ---
-        val cys = kept.map { it[1] + it[3] / 2 }.sorted()
+        val cys = inl.map { it[1] + it[3] / 2 }.sorted()
         val rowC = clusterByGap(cys, medH * 0.6f)
         if (rowC.size < 2)
             return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rowC.size, 0, lastGate)
 
-        // --- column count K from how many blobs the busiest rows hold ---
-        val perRow = IntArray(rowC.size)
-        for (c in kept) {
+        // per-row x lists; column count K from how many blobs the busiest rows hold
+        val rowx = Array(rowC.size) { ArrayList<Int>() }
+        for (c in inl) {
             val cy = c[1] + c[3] / 2
             var bi = 0; var bd = Int.MAX_VALUE
             for (i in rowC.indices) { val d = kotlin.math.abs(rowC[i] - cy); if (d < bd) { bd = d; bi = i } }
-            perRow[bi]++
+            rowx[bi].add(c[0] + c[2] / 2)
         }
-        val near4 = perRow.count { kotlin.math.abs(it - 4) <= 1 }
-        val near8 = perRow.count { kotlin.math.abs(it - 8) <= 1 }
-        val K = if (near8 > near4) 8 else 4
+        val counts = rowx.map { it.size }
+        val K = if (counts.count { kotlin.math.abs(it - 8) <= 1 } >
+            counts.count { kotlin.math.abs(it - 4) <= 1 }) 8 else 4
 
-        // --- column x-positions by splitting x-centres at the largest gaps ---
-        val cxs = kept.map { it[0] + it[2] / 2 }.sorted()
-        val colC = columnCenters(cxs.toIntArray(), K)
-        if (colC.size < 2)
-            return DecodeResult("", 0f, BitFormat.UNKNOWN, 0, null, inkPct, rowC.size, colC.size, lastGate)
-        val sp = if (colC.size > 1) median(IntArray(colC.size - 1) { colC[it + 1] - colC[it] }) else 16
-        val cellW = maxOf(6, (sp * 0.95f).toInt())
+        // --- column hypotheses: no single method is robust on its own, so try
+        // several and keep whichever decode is the most printable (web-app-style
+        // candidate vote). H1 gap-split, H2 even grid, H3 busiest-row medians. ---
+        val xs = inl.map { it[0] + it[2] / 2 }.sorted().toIntArray()
+        val cands = ArrayList<IntArray>()
+        cands.add(columnCenters(xs, K))
+        if (xs.size >= 2) {
+            val xmin = xs.first(); val xmax = xs.last()
+            cands.add(IntArray(K) { if (K > 1) xmin + it * (xmax - xmin) / (K - 1) else xmin })
+        }
+        val fulls = rowx.filter { it.size == K }.map { it.sorted() }
+        if (fulls.isNotEmpty()) cands.add(IntArray(K) { j -> median(IntArray(fulls.size) { fulls[it][j] }) })
+
+        var bestRaw = ""; var bestCells: List<Cell> = emptyList(); var bestBox: NormBox? = null
+        var bestFmt = BitFormat.UNKNOWN; var bestP = -1
+        for (cc in cands) {
+            if (cc.size < 2) continue
+            val (raw, cells, box, fmt) = decodeGrid(rowC, cc, K, medH, w, h)
+            val p = raw.count { it.code in 32..126 && it != '·' }
+            if (p > bestP) { bestP = p; bestRaw = raw; bestCells = cells; bestBox = box; bestFmt = fmt }
+        }
+        val glyphCount = rowC.size * K
+        if (bestRaw.isBlank())
+            return DecodeResult("", 0f, bestFmt, glyphCount, bestBox, inkPct, rowC.size, K, lastGate, bestRaw)
+        val conf = bestP.toFloat() / bestRaw.length
+        return DecodeResult(bestRaw.trim(), conf, bestFmt, glyphCount, bestBox, inkPct,
+            rowC.size, K, lastGate, bestRaw, bestCells)
+    }
+
+    /** Read one column hypothesis into (raw text, cells, box, format). */
+    private fun decodeGrid(rowC: IntArray, colC: IntArray, K: Int, medH: Int, w: Int, h: Int):
+        Quadruple {
         val half = medH * 0.6f
-
-        // --- read the grid ---
-        val sb = StringBuilder(); val cells = ArrayList<Cell>()
+        val sp = if (colC.size > 1) median(IntArray(colC.size - 1) { colC[it + 1] - colC[it] }) else 16
+        val cellW = maxOf(6, (sp * 0.9f).toInt())
         val fw = w.toFloat(); val fh = h.toFloat()
         val xL = (colC.first() - cellW / 2) / fw; val xR = (colC.last() + cellW / 2) / fw
+        val sb = StringBuilder(); val cells = ArrayList<Cell>()
         val fmt: BitFormat
         if (K >= 7) {
             fmt = BitFormat.EIGHT_BIT
@@ -148,15 +179,25 @@ class PrintedBinaryDecoder(
                 i += 2
             }
         }
-
         val box = toFull(NormBox(xL, (rowC.first() - half) / fh, xR, (rowC.last() + half) / fh))
-        val glyphCount = rowC.size * K
-        val raw = sb.toString()
-        if (raw.isBlank())
-            return DecodeResult("", 0f, fmt, glyphCount, box, inkPct, rowC.size, K, lastGate, raw)
-        val printable = raw.count { it.code in 32..126 && it != '·' }
-        val conf = printable.toFloat() / raw.length
-        return DecodeResult(raw.trim(), conf, fmt, glyphCount, box, inkPct, rowC.size, K, lastGate, raw, cells)
+        return Quadruple(sb.toString(), cells, box, fmt)
+    }
+
+    private inner class Quadruple(
+        val raw: String, val cells: List<Cell>, val box: NormBox?, val fmt: BitFormat
+    ) {
+        operator fun component1() = raw
+        operator fun component2() = cells
+        operator fun component3() = box
+        operator fun component4() = fmt
+    }
+
+    /** Tukey fences (Q1-1.5·IQR, Q3+1.5·IQR) for outlier rejection. */
+    private fun tukeyBounds(vals: List<Int>): Pair<Int, Int> {
+        if (vals.isEmpty()) return Pair(Int.MIN_VALUE, Int.MAX_VALUE)
+        val s = vals.sorted()
+        val q1 = s[s.size / 4]; val q3 = s[(s.size * 3) / 4]; val iqr = q3 - q1
+        return Pair(q1 - (iqr * 3) / 2, q3 + (iqr * 3) / 2)
     }
 
     // ---- grid helpers -----------------------------------------------------
