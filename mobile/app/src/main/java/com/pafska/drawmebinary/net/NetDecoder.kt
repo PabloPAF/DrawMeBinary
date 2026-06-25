@@ -39,7 +39,7 @@ object NetDecoder {
                 ?.bufferedReader()?.readText() ?: return null
             if (!ok) return null
             val text = JSONObject(body).optString("text", "")
-            text.ifBlank { null }
+            if (text.isBlank()) null else text
         } catch (e: Exception) {
             null
         } finally {

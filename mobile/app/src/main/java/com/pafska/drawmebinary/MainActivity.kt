@@ -55,7 +55,7 @@ class MainActivity : AppCompatActivity() {
 
     // optional cloud fallback for hard layouts (off by default; tap ☁ to enable)
     private var cloudEnabled = false
-    private val prefs by lazy { getSharedPreferences("dmb", MODE_PRIVATE) }
+    private val prefs by lazy { getSharedPreferences("dmb", android.content.Context.MODE_PRIVATE) }
     private var backendUrl: String
         get() = prefs.getString("backend_url", "") ?: ""
         set(v) { prefs.edit().putString("backend_url", v).apply() }
