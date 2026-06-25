@@ -150,7 +150,8 @@ class PrintedBinaryDecoder(
         val glyphCount = rowC.size * K
         if (bestRaw.isBlank())
             return DecodeResult("", 0f, bestFmt, glyphCount, bestBox, inkPct, rowC.size, K, lastGate, bestRaw)
-        val conf = bestP.toFloat() / bestRaw.length
+        val printable = bestRaw.count { it in ' '..'~' }
+        val conf = printable.toFloat() / bestRaw.length.coerceAtLeast(1)
         return DecodeResult(bestRaw.trim(), conf, bestFmt, glyphCount, bestBox, inkPct,
             rowC.size, K, lastGate, bestRaw, bestCells)
     }
