@@ -126,12 +126,16 @@ class PrintedBinaryDecoder(
         if (fulls.isNotEmpty()) cands.add(IntArray(K) { j -> median(IntArray(fulls.size) { fulls[it][j] }) })
 
         var bestRaw = ""; var bestCells: List<Cell> = emptyList(); var bestBox: NormBox? = null
-        var bestFmt = BitFormat.UNKNOWN; var bestP = -1
+        var bestFmt = BitFormat.UNKNOWN; var bestScore = -1
         for (cc in cands) {
             if (cc.size < 2) continue
             val (raw, cells, box, fmt) = decodeGrid(rowC, cc, K, medH, w, h)
-            val p = raw.count { it.code in 32..126 && it != '·' }
-            if (p > bestP) { bestP = p; bestRaw = raw; bestCells = cells; bestBox = box; bestFmt = fmt }
+            // score by letter-likeness, NOT raw printability: a wrong column
+            // placement can yield a repeating printable pattern (all '3'/';') that
+            // would otherwise win. Real messages are letters, so reward A-Z/a-z
+            // and character variety; degenerate decodes score ~0 and lose.
+            val score = letterScore(raw)
+            if (score > bestScore) { bestScore = score; bestRaw = raw; bestCells = cells; bestBox = box; bestFmt = fmt }
         }
         val glyphCount = rowC.size * K
         if (bestRaw.isBlank())
@@ -190,6 +194,13 @@ class PrintedBinaryDecoder(
         operator fun component2() = cells
         operator fun component3() = box
         operator fun component4() = fmt
+    }
+
+    /** Reward letters and character variety; degenerate repeating patterns score ~0. */
+    private fun letterScore(s: String): Int {
+        val letters = s.count { it in 'A'..'Z' || it in 'a'..'z' }
+        val variety = s.filter { it != '·' }.toSet().size
+        return letters * 10 + variety
     }
 
     /** Tukey fences (Q1-1.5·IQR, Q3+1.5·IQR) for outlier rejection. */
